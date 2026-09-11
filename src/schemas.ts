@@ -148,3 +148,30 @@ export const TicketResponseSchema = z
   .strict();
 
 export type TicketResponse = z.infer<typeof TicketResponseSchema>;
+
+export const ConversationMessageSchema = z.object({
+  id: identifierSchema,
+  role: z.enum(["customer", "support", "assistant"]),
+  content: nonEmptyStringSchema,
+  timestamp: z.string().datetime({ offset: true }).nullable(),
+}).strict();
+
+export const ConversationReadSchema = z.object({
+  conversation_id: identifierSchema,
+  customer: CustomerMetadataSchema,
+  messages: z.array(ConversationMessageSchema),
+  turn: z.object({
+    id: identifierSchema,
+    state: z.literal("completed"),
+    provider: nonEmptyStringSchema,
+    model_adapter: nonEmptyStringSchema,
+    mock_scenario: nonEmptyStringSchema,
+    decision_schema_version: identifierSchema,
+    started_at: z.string().datetime({ offset: true }),
+    completed_at: z.string().datetime({ offset: true }),
+  }).strict(),
+  decisions: z.array(DecisionSchema),
+  tool_calls: z.array(z.never()),
+}).strict();
+
+export type ConversationRead = z.infer<typeof ConversationReadSchema>;
