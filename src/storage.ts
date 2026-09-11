@@ -32,6 +32,7 @@ import {
   type StoredWorkItem,
 } from "./policy-effects";
 import { FollowUpMessageSchema, type FollowUpMessage } from "./follow-up";
+import { RecoveryClassificationSchema, RecoveryEffectStatusSchema, RecoveryOutcomeSchema, RecoveryReferencesSchema, RecoveryResultSchema, type RecoveryClassification, type RecoveryEffectStatus, type RecoveryResult } from "./recovery";
 
 export type StoredMessage = (InitialMessage | FollowUpMessage) & { id: string };
 
@@ -56,6 +57,7 @@ export interface InitialTriageAggregate {
     mock_scenario: string;
     decision_schema_version: string;
     started_at: string;
+    messages?: StoredMessage[];
     completed_at: string;
   };
   messages: StoredMessage[];
@@ -78,6 +80,7 @@ export interface RequestClaim {
     mock_scenario: string;
     decision_schema_version: string;
     started_at: string;
+    messages?: StoredMessage[];
   };
 }
 
@@ -271,11 +274,11 @@ export function saveCompletedInitialTriage(storage: Storage, aggregate: InitialT
         aggregate.request.fingerprint ?? "0000000000000000000000000000000000000000000000000000000000000000", aggregate.request.state,
         aggregate.request.cached_status ?? null, aggregate.request.cached_response ? JSON.stringify(TicketResponseSchema.parse(aggregate.request.cached_response)) : null,
         aggregate.request.created_at, aggregate.request.completed_at);
-    aggregate.messages.forEach((message, index) => storage.db.query(`INSERT INTO messages
+    aggregate.messages.forEach((message, index) => storage.db.query(`INSERT OR IGNORE INTO messages
       (id, conversation_id, turn_id, sequence, role, content, source_timestamp)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(message.id, aggregate.conversation.id, aggregate.turn.id, index + 1, message.role, message.content, message.timestamp));
-    storage.db.query(`INSERT INTO messages
+    storage.db.query(`INSERT OR IGNORE INTO messages
       (id, conversation_id, turn_id, sequence, role, content, source_timestamp)
       VALUES (?, ?, ?, ?, 'assistant', ?, NULL)`)
       .run(`${aggregate.turn.id}:reply`, aggregate.conversation.id, aggregate.turn.id, aggregate.messages.length + 1, aggregate.reply);
@@ -330,6 +333,11 @@ export function claimRequest(storage: Storage, claim: RequestClaim): RequestReso
     storage.db.query(`INSERT INTO turns (id, conversation_id, state, provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at)
       VALUES (?, ?, 'processing', ?, ?, ?, ?, ?, ?)`)
       .run(claim.turn_id, claim.conversation_id, claim.initial.provider, claim.initial.model_adapter, claim.initial.mock_scenario, claim.initial.decision_schema_version, claim.initial.started_at, null);
+    for (const [index, message] of (claim.initial.messages ?? []).entries()) {
+      const { id: _id, ...messagePayload } = message;
+      const parsedMessage = message.role === "operator" ? FollowUpMessageSchema.parse(messagePayload) : InitialMessageSchema.parse(messagePayload);
+      storage.db.query("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)").run(message.id, claim.conversation_id, claim.turn_id, index + 1, parsedMessage.role, parsedMessage.content, parsedMessage.timestamp);
+    }
     storage.db.query(`INSERT INTO requests (id, conversation_id, turn_id, endpoint_scope, request_key, body_fingerprint, state, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'processing', ?)`)
       .run(crypto.randomUUID(), claim.conversation_id, claim.turn_id, claim.scope, claim.key, claim.fingerprint, new Date().toISOString());
@@ -482,4 +490,74 @@ export function loadConversationHistory(storage: Storage, conversationId: string
   const messages = (storage.db.query("SELECT * FROM messages WHERE conversation_id = ? ORDER BY sequence").all(conversationId) as Array<Record<string, string | number | null>>).map((message) => ({ id: String(message.id), turn_id: String(message.turn_id), sequence: Number(message.sequence), role: message.role as ConversationHistory["messages"][number]["role"], content: String(message.content), timestamp: message.source_timestamp as string | null }));
   const decisions = (storage.db.query("SELECT decision_json FROM decisions WHERE turn_id IN (SELECT id FROM turns WHERE conversation_id = ?) ORDER BY created_at, id").all(conversationId) as Array<{ decision_json: string }>).map((decision) => DecisionSchema.parse(JSON.parse(decision.decision_json)));
   return { conversation: { id: row.id, customer }, messages, turns, decisions };
+}
+
+export interface InterruptedRequest {
+  classification: RecoveryClassification;
+  effect_status: RecoveryEffectStatus;
+  references: { request_id: string; conversation_id: string; turn_id: string; decision_id?: string; effect_id?: string; work_item_id?: string; receipt_id?: string };
+  request_scope: string;
+  request_key: IdempotencyKey;
+  fingerprint: RequestFingerprint;
+}
+
+function recoveryReferences(row: Record<string, string | null>): InterruptedRequest["references"] {
+  return RecoveryReferencesSchema.parse({ request_id: row.request_id, conversation_id: row.conversation_id, turn_id: row.turn_id, ...(row.decision_id ? { decision_id: row.decision_id } : {}), ...(row.effect_id ? { effect_id: row.effect_id } : {}), ...(row.work_item_id ? { work_item_id: row.work_item_id } : {}), ...(row.receipt_id ? { receipt_id: row.receipt_id } : {}) });
+}
+
+export function inspectInterruptedRequests(storage: Storage): InterruptedRequest[] {
+  const rows = storage.db.query(`SELECT r.id AS request_id, r.conversation_id, r.turn_id, r.endpoint_scope, r.request_key, r.body_fingerprint,
+      t.state AS turn_state, d.id AS decision_id, wi.id AS work_item_id, wi.status AS effect_status,
+      ea.id AS effect_id, wi.receipt_json
+    FROM requests r JOIN turns t ON t.id = r.turn_id
+    LEFT JOIN decisions d ON d.turn_id = t.id
+    LEFT JOIN work_items wi ON wi.id = (SELECT id FROM work_items WHERE conversation_id = r.conversation_id ORDER BY created_at DESC, id DESC LIMIT 1)
+    LEFT JOIN effect_attempts ea ON ea.id = (SELECT id FROM effect_attempts WHERE work_item_id = wi.id ORDER BY started_at DESC, id DESC LIMIT 1)
+    WHERE r.state = 'processing' OR t.state = 'processing'
+    ORDER BY r.created_at, r.id`).all() as Array<Record<string, string | null>>;
+  return rows.map((row) => {
+    const hasDecision = Boolean(row.decision_id);
+    const hasEffect = Boolean(row.work_item_id);
+    const classification = RecoveryClassificationSchema.parse(!hasDecision ? "accepted_no_plan" : row.effect_status === "succeeded" && row.receipt_json ? "effect_committed_before_response" : hasEffect ? "frozen_plan_before_effect" : "frozen_plan_before_effect");
+    const effectStatus = RecoveryEffectStatusSchema.parse(hasEffect ? row.effect_status === "succeeded" && row.receipt_json ? "succeeded" : row.effect_status === "failed" ? "failed" : row.effect_status === "pending" ? "pending" : "unknown" : "not_applicable");
+    return { classification, effect_status: effectStatus, references: recoveryReferences(row), request_scope: row.endpoint_scope!, request_key: IdempotencyKeySchema.parse(row.request_key), fingerprint: RequestFingerprintSchema.parse(row.body_fingerprint) };
+  });
+}
+
+export function finalizeInterruptedNoPlan(storage: Storage, requestId: string): RecoveryResult {
+  const existing = inspectInterruptedRequests(storage).find((candidate) => candidate.references.request_id === requestId);
+  if (!existing) throw new Error("interrupted request not found");
+  const now = new Date().toISOString();
+  const response = TicketResponseSchema.parse({ conversation_id: existing.references.conversation_id, turn_id: existing.references.turn_id, reply: "A human operator is needed to continue this request; automated triage did not complete.", decision: { id: `decision-recovery-${existing.references.turn_id}`, turn_id: existing.references.turn_id, schema_version: "decision.v1", urgency: "high", extracted: { product_area: "unknown", primary_issue_type: "unknown", secondary_issue_types: [], sentiment: "unknown", language: "unknown" }, action: "escalate_to_human", target_queue: "manual_triage", rationale: "The request was accepted before an automated plan was durable; manual triage is required.", evidence: [], knowledge_refs: [], unresolved_questions: [], requires_human: true, execution: { status: "unknown" }, tool_call_ids: [], status: "degraded" } });
+  const write = storage.db.transaction(() => {
+    const row = storage.db.query("SELECT state, cached_response_json FROM requests WHERE id = ?").get(requestId) as { state: string; cached_response_json: string | null } | null;
+    if (!row) throw new Error("interrupted request not found");
+    if (row.state === "completed" && row.cached_response_json) {
+      return RecoveryResultSchema.parse({ classification: "already_completed", outcome: "already_completed", references: existing.references, effect_status: existing.effect_status });
+    }
+    storage.db.query("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) VALUES (?, ?, ?, COALESCE((SELECT MAX(sequence) FROM messages WHERE conversation_id = ?), 0) + 1, 'assistant', ?, NULL)").run(`recovery:${existing.references.turn_id}`, existing.references.conversation_id, existing.references.turn_id, existing.references.conversation_id, response.reply);
+    storage.db.query("INSERT INTO decisions (id, turn_id, schema_version, decision_json, created_at) VALUES (?, ?, ?, ?, ?)").run(response.decision.id, existing.references.turn_id, response.decision.schema_version, JSON.stringify(response.decision), now);
+    storage.db.query("UPDATE turns SET state = 'completed', completed_at = ? WHERE id = ? AND state = 'processing'").run(now, existing.references.turn_id);
+    storage.db.query("UPDATE requests SET state = 'completed', cached_status = COALESCE(cached_status, 201), cached_response_json = ?, completed_at = ? WHERE id = ? AND state = 'processing'").run(JSON.stringify(response), now, requestId);
+    return RecoveryResultSchema.parse({ classification: "accepted_no_plan", outcome: "finalized_degraded", references: { ...existing.references, decision_id: response.decision.id }, effect_status: "not_applicable" });
+  });
+  return write();
+}
+
+export function finalizeRecoveredResponse(storage: Storage, requestId: string, response: TicketResponse, status = 200): RecoveryResult {
+  const parsed = TicketResponseSchema.parse(response);
+  const existing = inspectInterruptedRequests(storage).find((candidate) => candidate.references.request_id === requestId);
+  if (!existing) throw new Error("interrupted request not found");
+  const write = storage.db.transaction(() => {
+    const row = storage.db.query("SELECT state, cached_response_json FROM requests WHERE id = ?").get(requestId) as { state: string; cached_response_json: string | null } | null;
+    if (!row) throw new Error("interrupted request not found");
+    if (row.state === "completed" && row.cached_response_json) return RecoveryResultSchema.parse({ classification: "already_completed", outcome: "already_completed", references: existing.references, effect_status: existing.effect_status });
+    if (existing.effect_status !== "succeeded") return RecoveryResultSchema.parse({ classification: existing.classification, outcome: "unresolved", references: existing.references, effect_status: "unknown" });
+    storage.db.query("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) VALUES (?, ?, ?, COALESCE((SELECT MAX(sequence) FROM messages WHERE conversation_id = ?), 0) + 1, 'assistant', ?, NULL)").run(`recovery:${parsed.turn_id}`, parsed.conversation_id, parsed.turn_id, parsed.conversation_id, parsed.reply);
+    storage.db.query("INSERT INTO decisions (id, turn_id, schema_version, decision_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(turn_id) DO UPDATE SET decision_json = excluded.decision_json, schema_version = excluded.schema_version").run(parsed.decision.id, parsed.turn_id, parsed.decision.schema_version, JSON.stringify(parsed.decision), new Date().toISOString());
+    storage.db.query("UPDATE turns SET state = 'completed', completed_at = ? WHERE id = ? AND state = 'processing'").run(new Date().toISOString(), parsed.turn_id);
+    storage.db.query("UPDATE requests SET state = 'completed', cached_status = ?, cached_response_json = ?, completed_at = ? WHERE id = ? AND state = 'processing'").run(status, JSON.stringify(parsed), new Date().toISOString(), requestId);
+    return RecoveryResultSchema.parse({ classification: existing.classification, outcome: existing.effect_status === "succeeded" ? "effect_reused" : "response_finalized", references: { ...existing.references, decision_id: parsed.decision.id }, effect_status: existing.effect_status });
+  });
+  return write();
 }

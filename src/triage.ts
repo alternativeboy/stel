@@ -159,7 +159,7 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
       const fingerprint = fingerprintRequestBody(ticket);
       const claim = claimRequest(dependencies.storage, {
         ...request, fingerprint, conversation_id: conversationId, turn_id: turnId,
-        initial: { customer: ticket.customer, provider: dependencies.model.provider, model_adapter: dependencies.model.model_adapter, mock_scenario: dependencies.model.scenario, decision_schema_version: "decision.v1", started_at: now },
+        initial: { customer: ticket.customer, provider: dependencies.model.provider, model_adapter: dependencies.model.model_adapter, mock_scenario: dependencies.model.scenario, decision_schema_version: "decision.v1", started_at: now, messages: context.messages },
       });
       if (claim.outcome === "replay") return claim.response;
       if (claim.outcome === "conflict") throw new IdempotencyConflictError({ retryable: claim.retryable, reason: claim.details.reason });
