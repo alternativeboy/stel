@@ -57,6 +57,7 @@ export interface InitialTriageAggregate {
     mock_scenario: string;
     decision_schema_version: string;
     started_at: string;
+    messages?: StoredMessage[];
     completed_at: string;
   };
   messages: StoredMessage[];
@@ -79,6 +80,7 @@ export interface RequestClaim {
     mock_scenario: string;
     decision_schema_version: string;
     started_at: string;
+    messages?: StoredMessage[];
   };
 }
 
@@ -272,11 +274,11 @@ export function saveCompletedInitialTriage(storage: Storage, aggregate: InitialT
         aggregate.request.fingerprint ?? "0000000000000000000000000000000000000000000000000000000000000000", aggregate.request.state,
         aggregate.request.cached_status ?? null, aggregate.request.cached_response ? JSON.stringify(TicketResponseSchema.parse(aggregate.request.cached_response)) : null,
         aggregate.request.created_at, aggregate.request.completed_at);
-    aggregate.messages.forEach((message, index) => storage.db.query(`INSERT INTO messages
+    aggregate.messages.forEach((message, index) => storage.db.query(`INSERT OR IGNORE INTO messages
       (id, conversation_id, turn_id, sequence, role, content, source_timestamp)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(message.id, aggregate.conversation.id, aggregate.turn.id, index + 1, message.role, message.content, message.timestamp));
-    storage.db.query(`INSERT INTO messages
+    storage.db.query(`INSERT OR IGNORE INTO messages
       (id, conversation_id, turn_id, sequence, role, content, source_timestamp)
       VALUES (?, ?, ?, ?, 'assistant', ?, NULL)`)
       .run(`${aggregate.turn.id}:reply`, aggregate.conversation.id, aggregate.turn.id, aggregate.messages.length + 1, aggregate.reply);
@@ -331,6 +333,11 @@ export function claimRequest(storage: Storage, claim: RequestClaim): RequestReso
     storage.db.query(`INSERT INTO turns (id, conversation_id, state, provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at)
       VALUES (?, ?, 'processing', ?, ?, ?, ?, ?, ?)`)
       .run(claim.turn_id, claim.conversation_id, claim.initial.provider, claim.initial.model_adapter, claim.initial.mock_scenario, claim.initial.decision_schema_version, claim.initial.started_at, null);
+    for (const [index, message] of (claim.initial.messages ?? []).entries()) {
+      const { id: _id, ...messagePayload } = message;
+      const parsedMessage = message.role === "operator" ? FollowUpMessageSchema.parse(messagePayload) : InitialMessageSchema.parse(messagePayload);
+      storage.db.query("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)").run(message.id, claim.conversation_id, claim.turn_id, index + 1, parsedMessage.role, parsedMessage.content, parsedMessage.timestamp);
+    }
     storage.db.query(`INSERT INTO requests (id, conversation_id, turn_id, endpoint_scope, request_key, body_fingerprint, state, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'processing', ?)`)
       .run(crypto.randomUUID(), claim.conversation_id, claim.turn_id, claim.scope, claim.key, claim.fingerprint, new Date().toISOString());
@@ -504,15 +511,15 @@ export function inspectInterruptedRequests(storage: Storage): InterruptedRequest
       ea.id AS effect_id, wi.receipt_json
     FROM requests r JOIN turns t ON t.id = r.turn_id
     LEFT JOIN decisions d ON d.turn_id = t.id
-    LEFT JOIN work_items wi ON wi.conversation_id = r.conversation_id
-    LEFT JOIN effect_attempts ea ON ea.work_item_id = wi.id
+    LEFT JOIN work_items wi ON wi.id = (SELECT id FROM work_items WHERE conversation_id = r.conversation_id ORDER BY created_at DESC, id DESC LIMIT 1)
+    LEFT JOIN effect_attempts ea ON ea.id = (SELECT id FROM effect_attempts WHERE work_item_id = wi.id ORDER BY started_at DESC, id DESC LIMIT 1)
     WHERE r.state = 'processing' OR t.state = 'processing'
-    GROUP BY r.id ORDER BY r.created_at, r.id`).all() as Array<Record<string, string | null>>;
+    ORDER BY r.created_at, r.id`).all() as Array<Record<string, string | null>>;
   return rows.map((row) => {
     const hasDecision = Boolean(row.decision_id);
     const hasEffect = Boolean(row.work_item_id);
     const classification = RecoveryClassificationSchema.parse(!hasDecision ? "accepted_no_plan" : row.effect_status === "succeeded" && row.receipt_json ? "effect_committed_before_response" : hasEffect ? "frozen_plan_before_effect" : "frozen_plan_before_effect");
-    const effectStatus = RecoveryEffectStatusSchema.parse(hasEffect ? row.effect_status === "succeeded" && row.receipt_json ? "succeeded" : row.effect_status === "failed" ? "failed" : "unknown" : "not_applicable");
+    const effectStatus = RecoveryEffectStatusSchema.parse(hasEffect ? row.effect_status === "succeeded" && row.receipt_json ? "succeeded" : row.effect_status === "failed" ? "failed" : row.effect_status === "pending" ? "pending" : "unknown" : "not_applicable");
     return { classification, effect_status: effectStatus, references: recoveryReferences(row), request_scope: row.endpoint_scope!, request_key: IdempotencyKeySchema.parse(row.request_key), fingerprint: RequestFingerprintSchema.parse(row.body_fingerprint) };
   });
 }
@@ -545,7 +552,7 @@ export function finalizeRecoveredResponse(storage: Storage, requestId: string, r
     const row = storage.db.query("SELECT state, cached_response_json FROM requests WHERE id = ?").get(requestId) as { state: string; cached_response_json: string | null } | null;
     if (!row) throw new Error("interrupted request not found");
     if (row.state === "completed" && row.cached_response_json) return RecoveryResultSchema.parse({ classification: "already_completed", outcome: "already_completed", references: existing.references, effect_status: existing.effect_status });
-    if (existing.effect_status === "unknown" || existing.effect_status === "failed") return RecoveryResultSchema.parse({ classification: existing.classification, outcome: "unresolved", references: existing.references, effect_status: existing.effect_status === "failed" ? "unknown" : existing.effect_status });
+    if (existing.effect_status !== "succeeded") return RecoveryResultSchema.parse({ classification: existing.classification, outcome: "unresolved", references: existing.references, effect_status: "unknown" });
     storage.db.query("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) VALUES (?, ?, ?, COALESCE((SELECT MAX(sequence) FROM messages WHERE conversation_id = ?), 0) + 1, 'assistant', ?, NULL)").run(`recovery:${parsed.turn_id}`, parsed.conversation_id, parsed.turn_id, parsed.conversation_id, parsed.reply);
     storage.db.query("INSERT INTO decisions (id, turn_id, schema_version, decision_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(turn_id) DO UPDATE SET decision_json = excluded.decision_json, schema_version = excluded.schema_version").run(parsed.decision.id, parsed.turn_id, parsed.decision.schema_version, JSON.stringify(parsed.decision), new Date().toISOString());
     storage.db.query("UPDATE turns SET state = 'completed', completed_at = ? WHERE id = ? AND state = 'processing'").run(new Date().toISOString(), parsed.turn_id);

@@ -12,6 +12,7 @@ export const RecoveryClassificationSchema = z.enum([
 
 export const RecoveryEffectStatusSchema = z.enum([
   "not_applicable",
+  "pending",
   "succeeded",
   "failed",
   "unknown",
@@ -67,4 +68,3 @@ export type RecoveryOutcome = z.infer<typeof RecoveryOutcomeSchema>;
 export type RecoveryReferences = z.infer<typeof RecoveryReferencesSchema>;
 export type RecoveryResult = z.infer<typeof RecoveryResultSchema>;
 export type RecoverySummary = z.infer<typeof RecoverySummarySchema>;
-

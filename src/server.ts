@@ -7,6 +7,7 @@ import { createLocalKnowledgeBase, createLocalServiceStatus } from "./read-tool-
 import { createMockWorkItemExecutor } from "./effects";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { createRecoveryService } from "./recovery-service";
 
 try {
   const config = parseConfiguration(Bun.env);
@@ -16,12 +17,14 @@ try {
   const databasePath = config.databasePath ?? "./data/service.sqlite";
   await mkdir(dirname(databasePath), { recursive: true });
   const storage = openStorage(databasePath);
+  const effect = createMockWorkItemExecutor(storage);
+  await createRecoveryService({ storage, effect }).recover();
   const application = createTriageApplication({
     storage,
     model: createScriptedBillingAdapter(),
     knowledge: createLocalKnowledgeBase(),
     status: createLocalServiceStatus(),
-    effect: createMockWorkItemExecutor(storage),
+    effect,
   });
   const handleRequest = createRequestHandler(undefined, application);
   const server = Bun.serve({

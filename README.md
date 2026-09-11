@@ -21,6 +21,11 @@ Start the service in mock mode; no OpenAI API key is required:
 LLM_PROVIDER=mock bun run dev
 ```
 
+Startup scans the configured SQLite database for interrupted turns before the
+HTTP listener accepts traffic. No-plan turns receive a degraded manual-triage
+outcome; committed local effects are reused, while unknown effects remain
+explicitly unresolved.
+
 In another terminal, verify the health endpoint:
 
 ```sh

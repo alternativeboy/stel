@@ -13,7 +13,7 @@ afterEach(async () => await Promise.all(dirs.splice(0).map((path) => rm(path, { 
 async function processingStorage() {
   const directory = await mkdtemp(join(tmpdir(), "stel-recovery-storage-")); dirs.push(directory);
   const storage = openStorage(join(directory, "service.sqlite"));
-  claimRequest(storage, { scope: "POST /tickets", key: "recovery-key", fingerprint: "a".repeat(64), conversation_id: "conv-recovery", turn_id: "turn-recovery", initial: { customer: { plan: "pro" }, provider: "mock", model_adapter: "scripted", mock_scenario: "billing", decision_schema_version: "decision.v1", started_at: "2026-01-01T00:00:00Z" } });
+  claimRequest(storage, { scope: "POST /tickets", key: "recovery-key", fingerprint: "a".repeat(64), conversation_id: "conv-recovery", turn_id: "turn-recovery", initial: { customer: { plan: "pro" }, provider: "mock", model_adapter: "scripted", mock_scenario: "billing", decision_schema_version: "decision.v1", started_at: "2026-01-01T00:00:00Z", messages: [{ id: "message-recovery", role: "customer", content: "Pending billing concern", timestamp: "2026-01-01T00:00:00Z" }] } });
   const request = inspectInterruptedRequests(storage)[0]!;
   return { directory, storage, request };
 }
@@ -27,6 +27,7 @@ describe("SQLite recovery boundary", () => {
     closeStorage(storage);
     const reopened = openStorage(join(directory, "service.sqlite"));
     expect(inspectInterruptedRequests(reopened)).toHaveLength(0);
+    expect((reopened.db.query("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?").get("conv-recovery") as { count: number }).count).toBe(2);
     expect(finalizeInterruptedNoPlan).toBeDefined();
     closeStorage(reopened);
   });
@@ -38,7 +39,7 @@ describe("SQLite recovery boundary", () => {
     createOrReuseWorkItem(storage, deriveOperationIdentity("conv-recovery", "specialist_case", "billing"), { tool: "ensure_work_item", version: "v1", kind: "specialist_case", queue: "billing", title: "Billing review", summary: "Investigate billing.", evidence_refs: [] });
     const inspected = inspectInterruptedRequests(storage)[0]!;
     expect(inspected.classification).toBe("frozen_plan_before_effect");
-    expect(inspected.effect_status).toBe("unknown");
+    expect(inspected.effect_status).toBe("pending");
     const unresolved = finalizeRecoveredResponse(storage, request.references.request_id, TicketResponseSchema.parse({ conversation_id: "conv-recovery", turn_id: request.references.turn_id, reply: "Recovery requires human review.", decision }));
     expect(unresolved.outcome).toBe("unresolved");
     closeStorage(storage);
@@ -58,4 +59,3 @@ describe("SQLite recovery boundary", () => {
     closeStorage(storage);
   });
 });
-
