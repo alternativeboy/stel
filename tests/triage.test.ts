@@ -45,4 +45,20 @@ describe("initial triage application", () => {
     expect(saved.reply).toBe(response.reply);
     closeStorage(reopened);
   });
+
+  test("replays an identical request without invoking the adapter and rejects changed content", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "stel-replay-")); directories.push(directory);
+    const storage = openStorage(join(directory, "service.sqlite"));
+    const scripted = createScriptedBillingAdapter(); let calls = 0;
+    const model = { ...scripted, async propose(context: Parameters<typeof scripted.propose>[0]) { calls += 1; return scripted.propose(context); } };
+    const app = createTriageApplication({ storage, model });
+    const first = await app.ingest(ticket, { scope: "POST /tickets", key: "replay-key" });
+    closeStorage(storage);
+    const reopened = openStorage(join(directory, "service.sqlite"));
+    const restartedApp = createTriageApplication({ storage: reopened, model });
+    const second = await restartedApp.ingest(ticket, { scope: "POST /tickets", key: "replay-key" });
+    expect(second).toEqual(first); expect(calls).toBe(1);
+    await expect(restartedApp.ingest({ ...ticket, customer: { plan: "enterprise" } }, { scope: "POST /tickets", key: "replay-key" })).rejects.toThrow("idempotency different_body");
+    closeStorage(reopened);
+  });
 });

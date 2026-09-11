@@ -1,8 +1,21 @@
 # Support Ticket Triage — System Requirements
 
-Status: proposed implementation specification, based on [the assignment](../requirement.txt). This document describes what to build; [architecture.md](architecture.md) explains how it fits together. No application has been implemented yet.
+Status: living implementation specification, based on [the assignment](../requirement.txt). This document describes the target system; [architecture.md](architecture.md) explains how it fits together. Tasks 01–02 are implemented as an offline scripted tracer; the remaining requirements are planned work.
 
 The assignment's requirements are mandatory. The stack, policy, limits, labels, and contracts below are proposed choices for meeting them within 8–12 focused hours, not additional instructions from the evaluator.
+
+### Current implementation status
+
+The repository currently provides validated configuration, `GET /health`,
+`POST /tickets`, and `GET /conversations/{id}` backed by file-based SQLite.
+The implemented model adapter is a deterministic billing fixture (`mock` mode);
+it is not general language-model intelligence and makes no network calls.
+Request IDs, structured errors/logs, schema validation, and close/reopen
+persistence are covered by tests. Idempotency (Task 03), tools/policy/effects,
+follow-ups, recovery, evaluation, and the real OpenAI adapter remain deferred.
+
+The numbered task plan currently defines Tasks 01–06, 08, and 09; Task 07 has
+not yet been specified and should be defined before implementation begins.
 
 ## 1. Purpose and scope
 

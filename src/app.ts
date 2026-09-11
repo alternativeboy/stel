@@ -29,6 +29,8 @@ type TriageHandler = (request: Request) => Promise<Response>;
 import type { TriageApplication } from "./triage";
 import { ConversationNotFoundError } from "./triage";
 import { TicketIngestSchema } from "./schemas";
+import { IdempotencyKeySchema } from "./idempotency";
+import { IdempotencyConflictError } from "./triage";
 
 function getRequestId(request: Request): string {
   const providedRequestId = request.headers.get("x-request-id");
@@ -60,13 +62,14 @@ function errorResponse(
   code: string,
   message: string,
   details: Readonly<Record<string, unknown>>,
+  retryable = false,
 ): Response {
   const body: ErrorEnvelope = {
     error: {
       code,
       message,
       request_id: requestId,
-      retryable: false,
+      retryable,
       details,
     },
   };
@@ -162,6 +165,8 @@ export function createRequestHandler(
     }
     if (!triage) return finish(errorResponse(503, requestId, "service_unavailable", "Ticket triage is unavailable", {}));
     return (async () => {
+      const keyResult = IdempotencyKeySchema.safeParse(request.headers.get("idempotency-key"));
+      if (!keyResult.success) return finish(errorResponse(422, requestId, "invalid_idempotency_key", "A valid Idempotency-Key header is required", { field: "Idempotency-Key" }));
       const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
       if (contentType !== "application/json") return finish(errorResponse(415, requestId, "unsupported_media_type", "Content-Type must be application/json", {}));
       const declaredLength = Number(request.headers.get("content-length"));
@@ -174,9 +179,14 @@ export function createRequestHandler(
       const validation = TicketIngestSchema.safeParse(parsed);
       if (!validation.success) return finish(errorResponse(422, requestId, "invalid_ticket", "Ticket payload failed validation", validationDetails(validation.error)));
       try {
-        const result = await triage.ingest(validation.data);
+        const result = await triage.ingest(validation.data, { scope: "POST /tickets", key: keyResult.data });
         return finish(jsonResponse(result, 201, requestId), { conversation_id: result.conversation_id, turn_id: result.turn_id, decision_id: result.decision.id });
-      } catch {
+      } catch (error) {
+        if (error instanceof IdempotencyConflictError) {
+          const response = errorResponse(409, requestId, "idempotency_conflict", error.resolution.reason === "processing" ? "An equivalent request is already processing" : "This key was already used with a different request body", { reason: error.resolution.reason }, error.resolution.retryable);
+          if (error.resolution.retryable) response.headers.set("retry-after", "1");
+          return finish(response);
+        }
         return finish(errorResponse(503, requestId, "triage_unavailable", "Ticket triage is temporarily unavailable", {}));
       }
     })();

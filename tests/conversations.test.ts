@@ -16,7 +16,7 @@ describe("GET /conversations/{id}", () => {
     const directory = await mkdtemp(join(tmpdir(), "stel-restart-")); dirs.push(directory); const path = join(directory, "service.sqlite");
     const firstStorage = openStorage(path); const firstApp = createTriageApplication({ storage: firstStorage, model: createScriptedBillingAdapter() });
     const post = createRequestHandler(() => {}, firstApp);
-    const created = await post(new Request("http://localhost/tickets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }));
+    const created = await post(new Request("http://localhost/tickets", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "restart-key" }, body: JSON.stringify(payload) }));
     const createdBody = await created.json() as { conversation_id: string };
     closeStorage(firstStorage);
     const secondStorage = openStorage(path); const get = createRequestHandler(() => {}, createTriageApplication({ storage: secondStorage, model: createScriptedBillingAdapter() }));
