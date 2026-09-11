@@ -64,7 +64,7 @@ export type KnowledgeEvidenceReference = z.infer<typeof KnowledgeEvidenceReferen
 export const KNOWLEDGE_FIXTURES = Object.freeze([
   Object.freeze({ document_id: "kb-billing-pending", title: "Pending billing charges", excerpt: "Pending charges may require billing review before they are treated as settled payments.", score: 0.96, updated_at: "2026-01-15T00:00:00Z" }),
   Object.freeze({ document_id: "kb-pro-access", title: "Pro access after billing changes", excerpt: "Account access concerns after a billing change should be reviewed by the billing team.", score: 0.91, updated_at: "2026-01-15T00:00:00Z" }),
-  Object.freeze({ document_id: "kb-outage", title: "Investigating regional access failures", excerpt: "When multiple users are affected, preserve regional and device evidence for specialist investigation.", score: 0.88, updated_at: "2026-01-15T00:00:00Z" }),
+  Object.freeze({ document_id: "kb-outage", title: "Investigating regional access failures", excerpt: "When multiple users are affected, preserve regional and device evidence for specialist investigation. เหตุขัดข้อง ประเทศไทยต้องตรวจสอบหลักฐานระดับภูมิภาค.", score: 0.88, updated_at: "2026-01-15T00:00:00Z" }),
   Object.freeze({ document_id: "kb-faq-basics", title: "Common account questions", excerpt: "Find supported account guidance in the help center.", score: 0.62, updated_at: "2026-01-15T00:00:00Z" }),
 ]);
 
