@@ -1,8 +1,9 @@
 # Support Ticket Triage Service
 
 This repository contains a small offline, scripted billing-triage service with
-`GET /health`, `POST /tickets`, and `GET /conversations/{id}`. The mock adapter
-is fixture-driven and is not general language-model intelligence.
+`GET /health`, `POST /tickets`, and `GET /conversations/{id}`. It includes
+deterministic read-only knowledge/status fixtures; the mock adapter is not
+general language-model intelligence and no side-effect tools are implemented.
 
 ## Development
 
@@ -30,6 +31,7 @@ Create a billing triage (save the returned `conversation_id`):
 
 ```sh
 curl -i -X POST http://127.0.0.1:3000/tickets \
+  -H 'idempotency-key: readme-example-1' \
   -H 'content-type: application/json' \
   -d '{"customer":{"plan":"pro"},"messages":[{"role":"customer","content":"Three pending charges and no Pro access.","timestamp":"2026-09-11T08:00:00Z"}]}'
 ```

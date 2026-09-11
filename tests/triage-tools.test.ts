@@ -82,4 +82,18 @@ describe("bounded read-tool orchestration", () => {
     await expect(second.app.ingest(ticket, { scope: "POST /tickets", key: "tools-limit" })).rejects.toThrow("Tool call limit exceeded");
     closeStorage(second.storage);
   });
+
+  test("rejects malformed provider results without persisting a response", async () => {
+    const scripted = createScriptedBillingAdapter();
+    const malformed: ModelAdapter = { ...scripted, async propose(context) {
+      const proposal = await scripted.propose(context);
+      if (!context.tool_results?.length) return { ...proposal, tool_requests: [{ id: "tool-malformed", name: "search_knowledge_base", version: "v1", arguments: { tool: "search_knowledge_base", version: "v1", query: "billing", language: "en" } }] };
+      return proposal;
+    } };
+    const { app, storage } = await appWithModel(malformed);
+    const badKnowledge = { search: () => ({ tool: "search_knowledge_base", version: "v1", status: "ok", matches: [{ document_id: "bad", title: "", excerpt: "", score: 2, updated_at: "not-a-timestamp" }] }) } as never;
+    const badApp = createTriageApplication({ storage, model: malformed, knowledge: badKnowledge, status: createLocalServiceStatus() });
+    await expect(badApp.ingest(ticket, { scope: "POST /tickets", key: "tools-malformed" })).rejects.toThrow(ToolLoopError);
+    closeStorage(storage);
+  });
 });

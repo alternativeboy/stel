@@ -3,6 +3,7 @@ import { ConfigurationError, parseConfiguration } from "./config";
 import { openStorage } from "./storage";
 import { createScriptedBillingAdapter } from "./model";
 import { createTriageApplication } from "./triage";
+import { createLocalKnowledgeBase, createLocalServiceStatus } from "./read-tool-adapters";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -14,7 +15,12 @@ try {
   const databasePath = config.databasePath ?? "./data/service.sqlite";
   await mkdir(dirname(databasePath), { recursive: true });
   const storage = openStorage(databasePath);
-  const application = createTriageApplication({ storage, model: createScriptedBillingAdapter() });
+  const application = createTriageApplication({
+    storage,
+    model: createScriptedBillingAdapter(),
+    knowledge: createLocalKnowledgeBase(),
+    status: createLocalServiceStatus(),
+  });
   const handleRequest = createRequestHandler(undefined, application);
   const server = Bun.serve({
     hostname: config.host,

@@ -99,7 +99,11 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
             throw new ToolLoopError("Unknown tool requested.");
           }
           executedToolIds.push(request.id);
-          results.push(ToolResultSchema.parse({ id: request.id, name: request.name, version: request.version, result }));
+          try {
+            results.push(ToolResultSchema.parse({ id: request.id, name: request.name, version: request.version, result }));
+          } catch {
+            throw new ToolLoopError("Tool result is invalid.");
+          }
         }
         context.tool_results = [...(context.tool_results ?? []), ...results];
         proposal = await dependencies.model.propose(context);
