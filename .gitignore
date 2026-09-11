@@ -17,15 +17,12 @@ coverage/
 !.env.example
 
 # Runtime data
-data/*.db
-data/*.db-*
-data/*.sqlite
-data/*.sqlite-*
-data/*.sqlite3
-data/*.sqlite3-*
-*.db-journal
-*.sqlite-journal
-*.sqlite3-journal
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
 
 # Logs and process files
 *.log
@@ -43,3 +40,9 @@ temp/
 .vscode/
 *.swp
 *.swo
+
+# Local assignment and planning documents
+requirement.txt
+tasks.md
+docs/architecture.*
+prompts/
