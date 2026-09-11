@@ -162,8 +162,8 @@ Do not spend the assignment budget on authentication, multi-tenancy, polished UI
 
 ## Current state and next step
 
-Only the original assignment and design/context documents have been created or reviewed. No application code, dependencies, prompt implementation, tests, or evaluation harness exists yet. Earlier checks validated documentation JSON examples and local links; they were not application tests.
+The Bun/TypeScript foundation is implemented. It includes validated mock/OpenAI configuration, a key-free mock default, `GET /health`, structured HTTP errors, correlated request IDs, safe request-completion logs, and focused tests. No ticket routes, persistence, model adapter, tools, system prompt, or evaluation harness exist yet.
 
 The user had difficulty reading diagrams in Markdown. Use the visual HTML guide and plain-language walkthroughs when explaining the design. It was opened in the user's browser during this conversation.
 
-When implementation is requested, begin with a Bun-powered mock vertical slice: accept a ticket, persist it, produce a scripted structured decision, and retrieve the conversation. Then add policy-controlled work items, safe retries/recovery, follow-up turns, and failure tests. Keep the OpenAI adapter behind the same TypeScript model interface from the start. This context-file request does not itself request application implementation.
+The next implementation step is Task 02's Bun-powered mock vertical slice: accept a ticket, persist it, produce a scripted structured decision, and retrieve the conversation. Then add policy-controlled work items, safe retries/recovery, follow-up turns, and failure tests. Keep the OpenAI adapter behind the same TypeScript model interface from the start.
