@@ -34,17 +34,16 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
   return {
     getConversation(id) {
       try {
-        const aggregate = loadConversation(dependencies.storage, id);
+        const history = loadConversationHistory(dependencies.storage, id);
         const storedEffects = loadConversationEffects(dependencies.storage, id);
+        const latestTurn = history.turns.at(-1);
+        if (!latestTurn) throw new Error("conversation turn not found");
         return ConversationReadSchema.parse({
-          conversation_id: aggregate.conversation.id,
-          customer: aggregate.conversation.customer,
-          messages: [
-            ...aggregate.messages.map((message) => ({ id: message.id, role: message.role, content: message.content, timestamp: message.timestamp })),
-            { id: `${aggregate.turn.id}:reply`, role: "assistant", content: aggregate.reply, timestamp: null },
-          ],
-          turn: aggregate.turn,
-          decisions: [aggregate.decision],
+          conversation_id: history.conversation.id,
+          customer: history.conversation.customer,
+          messages: history.messages.map(({ id: messageId, role, content, timestamp }) => ({ id: messageId, role, content, timestamp })),
+          turn: latestTurn,
+          decisions: history.decisions,
           tool_calls: [],
           effects: storedEffects.work_items.map((item) => ({
           work_item_id: item.id,
@@ -64,7 +63,6 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
     },
     async continueConversation(conversationId, rawMessage, request) {
       const message = FollowUpMessageSchema.parse(rawMessage);
-      const history = loadConversationHistory(dependencies.storage, conversationId);
       const turnId = randomUUID();
       const messageId = randomUUID();
       const startedAt = new Date().toISOString();
@@ -76,6 +74,7 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
       });
       if (claim.outcome === "replay") return claim.response;
       if (claim.outcome === "conflict") throw new IdempotencyConflictError({ retryable: claim.retryable, reason: claim.details.reason });
+      const history = loadConversationHistory(dependencies.storage, conversationId);
       const initialMessages = history.messages.filter((item) => item.role !== "assistant" && (item.role === "customer" || item.role === "support")).map(({ role, content, timestamp }) => ({ role, content, timestamp }));
       const modelMessages = history.messages.filter((item) => item.role !== "assistant" && item.timestamp !== null).map(({ role, content, timestamp, id }) => ({ role, content, timestamp: timestamp!, id })) as ModelContext["messages"];
       modelMessages.push({ ...message, id: messageId });

@@ -31,6 +31,7 @@ import { ConversationNotFoundError } from "./triage";
 import { TicketIngestSchema } from "./schemas";
 import { IdempotencyKeySchema } from "./idempotency";
 import { IdempotencyConflictError } from "./triage";
+import { FollowUpMessageSchema } from "./follow-up";
 
 function getRequestId(request: Request): string {
   const providedRequestId = request.headers.get("x-request-id");
@@ -140,6 +141,42 @@ export function createRequestHandler(
         duration_ms: Math.max(0, Number((performance.now() - startedAt).toFixed(3))), ...ids });
       return response;
     };
+
+    const followUpMatch = pathname.match(/^\/conversations\/([^/]+)\/messages$/);
+    if (followUpMatch) {
+      if (request.method !== "POST") {
+        const response = errorResponse(405, requestId, "method_not_allowed", "Method not allowed", { allowed_methods: ["POST"] });
+        response.headers.set("allow", "POST");
+        return finish(response);
+      }
+      if (!triage) return finish(errorResponse(503, requestId, "service_unavailable", "Ticket triage is unavailable", {}));
+      return (async () => {
+        const keyResult = IdempotencyKeySchema.safeParse(request.headers.get("idempotency-key"));
+        if (!keyResult.success) return finish(errorResponse(422, requestId, "invalid_idempotency_key", "A valid Idempotency-Key header is required", { field: "Idempotency-Key" }));
+        const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+        if (contentType !== "application/json") return finish(errorResponse(415, requestId, "unsupported_media_type", "Content-Type must be application/json", {}));
+        const declaredLength = Number(request.headers.get("content-length"));
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) return finish(payloadTooLargeResponse(requestId));
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        if (bytes.byteLength > MAX_REQUEST_BYTES) return finish(payloadTooLargeResponse(requestId));
+        let parsed: unknown;
+        try { parsed = JSON.parse(new TextDecoder().decode(bytes)); } catch { return finish(errorResponse(400, requestId, "malformed_json", "Request body is not valid JSON", {})); }
+        const validation = FollowUpMessageSchema.safeParse(parsed);
+        if (!validation.success) return finish(errorResponse(422, requestId, "invalid_follow_up", "Follow-up message failed validation", validationDetails(validation.error)));
+        try {
+          const result = await triage.continueConversation(followUpMatch[1]!, validation.data, { scope: `POST /conversations/${followUpMatch[1]!}/messages`, key: keyResult.data });
+          return finish(jsonResponse(result, 200, requestId), { conversation_id: result.conversation_id, turn_id: result.turn_id, decision_id: result.decision.id });
+        } catch (error) {
+          if (error instanceof ConversationNotFoundError || (error instanceof Error && error.message === "conversation not found")) return finish(errorResponse(404, requestId, "not_found", "Conversation not found", { conversation_id: followUpMatch[1] }));
+          if (error instanceof IdempotencyConflictError) {
+            const response = errorResponse(409, requestId, "idempotency_conflict", error.resolution.reason === "processing" ? "A conversation turn is already processing" : "This key was already used with a different request body", { reason: error.resolution.reason }, error.resolution.retryable);
+            if (error.resolution.retryable) response.headers.set("retry-after", "1");
+            return finish(response);
+          }
+          return finish(errorResponse(503, requestId, "triage_unavailable", "Conversation turn is temporarily unavailable", {}));
+        }
+      })();
+    }
 
     const conversationMatch = pathname.match(/^\/conversations\/([^/]+)$/);
     if (conversationMatch) {

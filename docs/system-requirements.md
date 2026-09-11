@@ -1,6 +1,6 @@
 # Support Ticket Triage — System Requirements
 
-Status: living implementation specification, based on [the assignment](../requirement.txt). This document describes the target system; [architecture.md](architecture.md) explains how it fits together. Tasks 01–05 are implemented as an offline scripted tracer with deterministic read-only tools and a durable local mock work-item effect; the real provider and later conversation/recovery work remain planned.
+Status: living implementation specification, based on [the assignment](../requirement.txt). This document describes the target system; [architecture.md](architecture.md) explains how it fits together. Tasks 01–06 are implemented as an offline scripted tracer with deterministic read-only tools, durable local mock work-item effects, and persistent operator/customer follow-up turns; the real provider and startup recovery work remain planned.
 
 The assignment's requirements are mandatory. The stack, policy, limits, labels, and contracts below are proposed choices for meeting them within 8–12 focused hours, not additional instructions from the evaluator.
 
