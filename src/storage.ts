@@ -19,6 +19,18 @@ import {
   type RequestFingerprint,
   type RequestResolution,
 } from "./idempotency";
+import {
+  EnsureWorkItemInputSchema,
+  EnsureWorkItemResultSchema,
+  OperationIdentitySchema,
+  StoredEffectAttemptSchema,
+  StoredWorkItemSchema,
+  type EnsureWorkItemInput,
+  type EnsureWorkItemResult,
+  type OperationIdentity,
+  type StoredEffectAttempt,
+  type StoredWorkItem,
+} from "./policy-effects";
 
 export type StoredMessage = InitialMessage & { id: string };
 
@@ -108,6 +120,32 @@ const turnsTable = `CREATE TABLE IF NOT EXISTS turns (
     UNIQUE (id, conversation_id)
   );`;
 
+const effectsTables = `
+  CREATE TABLE IF NOT EXISTS work_items (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    kind TEXT NOT NULL CHECK (kind IN ('specialist_case', 'incident')),
+    queue TEXT NOT NULL CHECK (queue IN ('billing', 'product_support', 'operations', 'manual_triage')),
+    operation_key TEXT NOT NULL UNIQUE,
+    intent_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed', 'unknown')),
+    provider TEXT NOT NULL,
+    receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (conversation_id, kind, queue)
+  );
+  CREATE TABLE IF NOT EXISTS effect_attempts (
+    id TEXT PRIMARY KEY,
+    work_item_id TEXT NOT NULL REFERENCES work_items(id),
+    turn_id TEXT REFERENCES turns(id),
+    tool_call_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed', 'unknown')),
+    result_json TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+  );`;
+
 const schema = `
   PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS conversations (
@@ -135,6 +173,7 @@ const schema = `
     decision_json TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+  ${effectsTables}
 `;
 
 export function openStorage(path: string): Storage {
@@ -280,4 +319,79 @@ export function completeRequest(storage: Storage, scope: string, key: string, re
   storage.db.query(`UPDATE requests SET state = 'completed', cached_status = ?, cached_response_json = ?, completed_at = ?
     WHERE endpoint_scope = ? AND request_key = ?`)
     .run(status, JSON.stringify(parsed), new Date().toISOString(), scope, key);
+}
+
+export function createOrReuseWorkItem(
+  storage: Storage,
+  identity: OperationIdentity,
+  input: EnsureWorkItemInput,
+  provider = "mock",
+): { workItem: StoredWorkItem; reused: boolean } {
+  const parsedIdentity = OperationIdentitySchema.parse(identity);
+  const parsedInput = EnsureWorkItemInputSchema.parse(input);
+  if (parsedIdentity.kind !== parsedInput.kind || parsedIdentity.queue !== parsedInput.queue) {
+    throw new Error("work-item identity does not match intent");
+  }
+  const expectedOperationKey = `work-item:${parsedIdentity.conversation_id}:${parsedIdentity.kind}:${parsedIdentity.queue}`;
+  if (parsedIdentity.operation_key !== expectedOperationKey) throw new Error("operation key is not server-derived");
+  const now = new Date().toISOString();
+  const transact = storage.db.transaction(() => {
+    const existing = storage.db.query("SELECT * FROM work_items WHERE operation_key = ?").get(parsedIdentity.operation_key) as Record<string, string | null> | null;
+    if (existing) return { workItem: parseStoredWorkItem(existing), reused: true };
+    const id = `wi-${crypto.randomUUID()}`;
+    storage.db.query(`INSERT INTO work_items
+      (id, conversation_id, kind, queue, operation_key, intent_json, status, provider, receipt_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL, ?, ?)`)
+      .run(id, parsedIdentity.conversation_id, parsedIdentity.kind, parsedIdentity.queue, parsedIdentity.operation_key, JSON.stringify(parsedInput), provider, now, now);
+    return { workItem: StoredWorkItemSchema.parse({ id, conversation_id: parsedIdentity.conversation_id, kind: parsedIdentity.kind, queue: parsedIdentity.queue, operation_key: parsedIdentity.operation_key, intent: parsedInput, status: "pending", provider, receipt: null, created_at: now, updated_at: now }), reused: false };
+  });
+  return transact();
+}
+
+export function recordEffectAttempt(storage: Storage, attempt: Omit<StoredEffectAttempt, "status" | "result" | "completed_at">): StoredEffectAttempt {
+  const parsed = StoredEffectAttemptSchema.parse({ ...attempt, status: "pending", result: null, completed_at: null });
+  storage.db.query(`INSERT INTO effect_attempts (id, work_item_id, turn_id, tool_call_id, status, result_json, started_at, completed_at)
+    VALUES (?, ?, ?, ?, 'pending', NULL, ?, NULL)`).run(parsed.id, parsed.work_item_id, parsed.turn_id, parsed.tool_call_id, parsed.started_at);
+  return parsed;
+}
+
+export function completeEffectAttempt(storage: Storage, attemptId: string, result: EnsureWorkItemResult): StoredEffectAttempt {
+  const parsedResult = EnsureWorkItemResultSchema.parse(result);
+  const completedAt = new Date().toISOString();
+  const transact = storage.db.transaction(() => {
+    const row = storage.db.query("SELECT * FROM effect_attempts WHERE id = ?").get(attemptId) as Record<string, string | null> | null;
+    if (!row) throw new Error("effect attempt not found");
+    if (row.status !== "pending") throw new Error("effect attempt is already completed");
+    if ((parsedResult.status === "succeeded" || parsedResult.status === "reused") && parsedResult.receipt.work_item_id !== row.work_item_id) {
+      throw new Error("effect receipt does not match work item");
+    }
+    const status = parsedResult.status === "reused" ? "succeeded" : parsedResult.status;
+    storage.db.query("UPDATE effect_attempts SET status = ?, result_json = ?, completed_at = ? WHERE id = ?")
+      .run(status, JSON.stringify(parsedResult), completedAt, attemptId);
+    if (parsedResult.status === "succeeded" || parsedResult.status === "reused") {
+      storage.db.query("UPDATE work_items SET status = 'succeeded', receipt_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(parsedResult.receipt), completedAt, row.work_item_id);
+    } else {
+      storage.db.query("UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?")
+        .run(parsedResult.status, completedAt, row.work_item_id);
+    }
+    const updated = storage.db.query("SELECT * FROM effect_attempts WHERE id = ?").get(attemptId) as Record<string, string | null>;
+    return parseStoredEffectAttempt(updated);
+  });
+  return transact();
+}
+
+export function loadConversationEffects(storage: Storage, conversationId: string): { work_items: StoredWorkItem[]; attempts: StoredEffectAttempt[] } {
+  const items = storage.db.query("SELECT * FROM work_items WHERE conversation_id = ? ORDER BY created_at, id").all(conversationId) as Array<Record<string, string | null>>;
+  const workItems = items.map(parseStoredWorkItem);
+  const attempts = storage.db.query(`SELECT ea.* FROM effect_attempts ea JOIN work_items wi ON wi.id = ea.work_item_id WHERE wi.conversation_id = ? ORDER BY ea.started_at, ea.id`).all(conversationId) as Array<Record<string, string | null>>;
+  return { work_items: workItems, attempts: attempts.map(parseStoredEffectAttempt) };
+}
+
+function parseStoredWorkItem(row: Record<string, string | null>): StoredWorkItem {
+  return StoredWorkItemSchema.parse({ id: row.id, conversation_id: row.conversation_id, kind: row.kind, queue: row.queue, operation_key: row.operation_key, intent: JSON.parse(row.intent_json!), status: row.status, provider: row.provider, receipt: row.receipt_json === null ? null : JSON.parse(row.receipt_json), created_at: row.created_at, updated_at: row.updated_at });
+}
+
+function parseStoredEffectAttempt(row: Record<string, string | null>): StoredEffectAttempt {
+  return StoredEffectAttemptSchema.parse({ id: row.id, work_item_id: row.work_item_id, turn_id: row.turn_id, tool_call_id: row.tool_call_id, status: row.status, result: row.result_json === null ? null : JSON.parse(row.result_json), started_at: row.started_at, completed_at: row.completed_at });
 }

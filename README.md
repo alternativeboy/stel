@@ -2,8 +2,8 @@
 
 This repository contains a small offline, scripted billing-triage service with
 `GET /health`, `POST /tickets`, and `GET /conversations/{id}`. It includes
-deterministic read-only knowledge/status fixtures; the mock adapter is not
-general language-model intelligence and no side-effect tools are implemented.
+deterministic read-only knowledge/status fixtures and a local mock work-item
+executor; the mock adapter is not general language-model intelligence.
 
 ## Development
 

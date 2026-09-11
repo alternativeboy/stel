@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EnsureWorkItemResultSchema } from "./policy-effects";
 
 const nonEmpty = z.string().trim().min(1);
 const timestamp = z.string().datetime({ offset: true });
@@ -57,7 +58,7 @@ export const KnowledgeEvidenceReferenceSchema = z.object({
 
 export const ToolRequestSchema = z.object({
   id: nonEmpty.max(128),
-  name: z.enum([SEARCH_KNOWLEDGE_BASE, GET_SERVICE_STATUS]),
+  name: z.enum([SEARCH_KNOWLEDGE_BASE, GET_SERVICE_STATUS, "ensure_work_item"]),
   version: z.literal(READ_TOOL_VERSION),
   arguments: z.unknown(),
 }).strict();
@@ -74,7 +75,13 @@ const StatusToolResultSchema = z.object({
   version: z.literal(READ_TOOL_VERSION),
   result: ServiceStatusResultSchema,
 }).strict();
-export const ToolResultSchema = z.union([SearchToolResultSchema, StatusToolResultSchema]);
+const EffectToolResultSchema = z.object({
+  id: nonEmpty.max(128),
+  name: z.literal("ensure_work_item"),
+  version: z.literal(READ_TOOL_VERSION),
+  result: EnsureWorkItemResultSchema,
+}).strict();
+export const ToolResultSchema = z.union([SearchToolResultSchema, StatusToolResultSchema, EffectToolResultSchema]);
 
 export type SearchKnowledgeInput = z.infer<typeof SearchKnowledgeInputSchema>;
 export type SearchKnowledgeResult = z.infer<typeof SearchKnowledgeResultSchema>;
