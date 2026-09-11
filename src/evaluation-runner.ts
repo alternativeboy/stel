@@ -27,7 +27,6 @@ function recordedAdapter(item: EvaluationCase): ModelAdapter {
       if (item.scenario === "billing" || item.scenario === "follow_up") {
         const proposal = await billing.propose(context);
         return { ...proposal, tool_requests: [{ id: `effect-${item.scenario}`, name: "ensure_work_item", version: "v1", arguments: { tool: "ensure_work_item", version: "v1", kind: "specialist_case", queue: "billing", title: "Billing investigation", summary: "Investigate reported billing and access concerns.", evidence_refs: [] } }] };
-        return proposal;
       }
       if (item.scenario === "faq_only" && !context.tool_results?.length) {
         return {
@@ -61,8 +60,9 @@ export function createDefaultEvaluationExecutor(): EvaluationCaseExecutor {
   return {
     async execute(item) {
       const directory = await mkdtemp(join(tmpdir(), "stel-eval-"));
-      const storage = openStorage(join(directory, "service.sqlite"));
+      let storage: ReturnType<typeof openStorage> | undefined;
       try {
+        storage = openStorage(join(directory, "service.sqlite"));
         const model = recordedAdapter(item);
         const app = createTriageApplication({ storage, model, knowledge: createLocalKnowledgeBase(), status: createLocalServiceStatus(), effect: createMockWorkItemExecutor(storage) });
         let response: TicketResponse;
@@ -74,7 +74,7 @@ export function createDefaultEvaluationExecutor(): EvaluationCaseExecutor {
         const effect = app.getConversation(response.conversation_id).effects.at(-1);
         return { response, effect: effect ? { kind: effect.kind, queue: effect.queue } : null } satisfies EvaluationExecution;
       } finally {
-        closeStorage(storage);
+        if (storage) closeStorage(storage);
         await rm(directory, { recursive: true });
       }
     },
@@ -83,8 +83,7 @@ export function createDefaultEvaluationExecutor(): EvaluationCaseExecutor {
 
 function actual(response: TicketResponse): EvaluationActualFacts {
   const queue = response.decision.target_queue === null ? null : WorkItemQueueSchema.parse(response.decision.target_queue);
-  const effectKind = response.decision.execution.work_item_id ? null : null;
-  return { urgency: response.decision.urgency, action: response.decision.action, target_queue: queue, language: response.decision.extracted.language, primary_issue_type: response.decision.extracted.primary_issue_type, knowledge_refs: response.decision.knowledge_refs, effect_status: response.decision.execution.status, effect_kind: effectKind, effect_queue: null };
+  return { urgency: response.decision.urgency, action: response.decision.action, target_queue: queue, language: response.decision.extracted.language, primary_issue_type: response.decision.extracted.primary_issue_type, knowledge_refs: response.decision.knowledge_refs, effect_status: response.decision.execution.status, effect_kind: null, effect_queue: null };
 }
 
 function safetyViolations(response: TicketResponse, item: EvaluationCase): string[] {
@@ -105,7 +104,7 @@ export async function runEvaluationCase(item: EvaluationCase, executor: Evaluati
     const violations = safetyViolations(response, item);
     const facts = { ...actual(response), effect_kind: execution.effect?.kind ?? null, effect_queue: execution.effect?.queue ?? null };
     const refsPresent = item.expected.required_knowledge_refs.every((ref) => facts.knowledge_refs.includes(ref));
-    const effectMatches = item.expected.required_effect === null ? facts.effect_kind === null : facts.effect_kind === item.expected.required_effect.kind && facts.effect_queue === item.expected.required_effect.queue && (facts.effect_status === "succeeded" || facts.effect_status === "unknown");
+    const effectMatches = item.expected.required_effect === null ? facts.effect_kind === null : facts.effect_kind === item.expected.required_effect.kind && facts.effect_queue === item.expected.required_effect.queue && facts.effect_status === "succeeded";
     const passed = response.decision.urgency === item.expected.urgency && response.decision.action === item.expected.action && response.decision.target_queue === item.expected.target_queue && response.decision.extracted.language === item.expected.language && response.decision.extracted.primary_issue_type === item.expected.primary_issue_type && response.decision.status === item.expected.expected_status && refsPresent && effectMatches && violations.length === 0;
     return EvaluationCaseResultSchema.parse({ case_id: item.id, status: passed ? "passed" : "failed", schema_valid: true, expected: item.expected, actual: facts, safety_violations: violations, ...(passed ? {} : { details: "Observed output did not satisfy the declared fixture labels." }) });
   } catch {
