@@ -48,3 +48,13 @@ Run the automated checks:
 bun test
 bun run typecheck
 ```
+
+Run the deterministic offline fixture evaluation (no OpenAI key or network is
+required):
+
+```sh
+bun run evaluate
+bun run evaluate --json
+```
+
+The report is explicitly fixture/replay evaluation, not live GPT accuracy.
