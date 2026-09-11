@@ -11,12 +11,15 @@ The repository currently provides validated configuration, `GET /health`,
 The implemented model adapter is a deterministic billing fixture (`mock` mode);
 it is not general language-model intelligence and makes no network calls.
 Request IDs, structured errors/logs, schema validation, close/reopen
-persistence, idempotency, bounded read-only knowledge/status tools, and
-policy-gated durable mock work-item effects are covered by tests. Follow-ups,
-recovery, evaluation, and the real OpenAI adapter remain deferred.
+persistence, idempotency, bounded read-only knowledge/status tools,
+policy-gated durable mock work-item effects, and persistent follow-ups are
+covered by tests. Offline fixture evaluation is now specified in
+`prompts/task-07-evaluation.md`; recovery and the real OpenAI adapter remain
+deferred.
 
-The numbered task plan currently defines Tasks 01–06, 08, and 09; Task 07 has
-not yet been specified and should be defined before implementation begins.
+The numbered task plan now defines Tasks 01–07, 08, and 09. Task 07 is limited
+to deterministic offline fixture/replay evaluation and must not make network
+calls or claim live GPT accuracy.
 
 ## 1. Purpose and scope
 
