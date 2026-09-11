@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { TicketResponseSchema, TicketIngestSchema, ConversationReadSchema, type TicketIngest, type TicketResponse, type ConversationRead } from "./schemas";
+import { DecisionSchema, TicketResponseSchema, TicketIngestSchema, ConversationReadSchema, type TicketIngest, type TicketResponse, type ConversationRead } from "./schemas";
 import { claimRequest, loadConversation, saveCompletedInitialTriage, type InitialTriageAggregate, type Storage } from "./storage";
 import { fingerprintRequestBody } from "./idempotency";
-import type { ModelAdapter } from "./model";
+import type { ModelAdapter, ModelContext } from "./model";
+import { validateToolRequests } from "./model";
+import { GET_SERVICE_STATUS, SEARCH_KNOWLEDGE_BASE, SearchKnowledgeInputSchema, ServiceStatusInputSchema, ToolResultSchema, type ToolResult } from "./read-tools";
+import type { KnowledgeBaseSearch, ServiceStatusLookup } from "./read-tool-adapters";
+
+const MAX_TOOL_CALLS = 3;
 
 export interface TriageApplication {
   ingest(input: TicketIngest, request?: { scope: string; key: string }): Promise<TicketResponse>;
@@ -17,7 +22,11 @@ export class IdempotencyConflictError extends Error {
   constructor(readonly resolution: { retryable: boolean; reason: "different_body" | "processing" }) { super(`idempotency ${resolution.reason}`); this.name = "IdempotencyConflictError"; }
 }
 
-export function createTriageApplication(dependencies: { storage: Storage; model: ModelAdapter }): TriageApplication {
+export class ToolLoopError extends Error {
+  constructor(message: string) { super(message); this.name = "ToolLoopError"; }
+}
+
+export function createTriageApplication(dependencies: { storage: Storage; model: ModelAdapter; knowledge?: KnowledgeBaseSearch; status?: ServiceStatusLookup }): TriageApplication {
   return {
     getConversation(id) {
       try {
@@ -43,10 +52,11 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
       const conversationId = randomUUID();
       const turnId = randomUUID();
       const messageIds = ticket.messages.map(() => randomUUID());
-      const context = {
+      const context: ModelContext = {
         turn_id: turnId,
         ticket,
         messages: ticket.messages.map((message, index) => ({ ...message, id: messageIds[index] })),
+        tool_results: [],
       };
       const now = new Date().toISOString();
       const fingerprint = fingerprintRequestBody(ticket);
@@ -56,12 +66,51 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
       });
       if (claim.outcome === "replay") return claim.response;
       if (claim.outcome === "conflict") throw new IdempotencyConflictError({ retryable: claim.retryable, reason: claim.details.reason });
-      const proposal = await dependencies.model.propose(context);
+      let proposal = await dependencies.model.propose(context);
+      const executedToolIds: string[] = [];
+      const knowledgeRefs: string[] = [];
+      for (let round = 0; ; round += 1) {
+        let requests;
+        try {
+          requests = validateToolRequests(proposal.tool_requests);
+        } catch {
+          throw new ToolLoopError("Tool request is invalid.");
+        }
+        if (requests.length === 0) break;
+        if (requests.some((request, index) => requests.findIndex((candidate) => candidate.id === request.id) !== index || executedToolIds.includes(request.id))) {
+          throw new ToolLoopError("Tool request IDs must be unique.");
+        }
+        if (executedToolIds.length + requests.length > MAX_TOOL_CALLS) throw new ToolLoopError("Tool call limit exceeded.");
+        const results: ToolResult[] = [];
+        for (const request of requests) {
+          let result: ToolResult["result"];
+          if (request.name === SEARCH_KNOWLEDGE_BASE) {
+            if (!dependencies.knowledge) throw new ToolLoopError("Knowledge search is unavailable.");
+            let input;
+            try { input = SearchKnowledgeInputSchema.parse(request.arguments); } catch { throw new ToolLoopError("Knowledge search arguments are invalid."); }
+            result = dependencies.knowledge.search(input);
+            if (result.status === "ok") knowledgeRefs.push(...result.matches.map((match) => match.document_id));
+          } else if (request.name === GET_SERVICE_STATUS) {
+            if (!dependencies.status) throw new ToolLoopError("Service status is unavailable.");
+            let input;
+            try { input = ServiceStatusInputSchema.parse(request.arguments); } catch { throw new ToolLoopError("Service status arguments are invalid."); }
+            result = dependencies.status.lookup(input);
+          } else {
+            throw new ToolLoopError("Unknown tool requested.");
+          }
+          executedToolIds.push(request.id);
+          results.push(ToolResultSchema.parse({ id: request.id, name: request.name, version: request.version, result }));
+        }
+        context.tool_results = [...(context.tool_results ?? []), ...results];
+        proposal = await dependencies.model.propose(context);
+        if (round >= MAX_TOOL_CALLS) throw new ToolLoopError("Tool call limit exceeded.");
+      }
+      const candidate = DecisionSchema.parse(proposal.decision);
       const response = TicketResponseSchema.parse({
         conversation_id: conversationId,
         turn_id: turnId,
         reply: proposal.reply,
-        decision: proposal.decision,
+        decision: { ...candidate, tool_call_ids: executedToolIds, knowledge_refs: [...new Set(knowledgeRefs)] },
       });
       const aggregate: InitialTriageAggregate = {
         conversation: { id: conversationId, customer: ticket.customer },

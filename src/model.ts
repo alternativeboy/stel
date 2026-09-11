@@ -1,15 +1,23 @@
 import { DecisionSchema, TicketIngestSchema, type Decision, type TicketIngest } from "./schemas";
+import { ToolRequestSchema, type ToolRequest, type ToolResult } from "./read-tools";
 
 export interface ModelContext {
   turn_id: string;
   ticket: TicketIngest;
   messages: Array<TicketIngest["messages"][number] & { id: string }>;
+  tool_results?: ToolResult[];
 }
 
 export interface ModelProposal {
   reply: string;
   decision: Decision;
+  tool_requests?: ToolRequest[];
 }
+
+export const validateToolRequests = (requests: unknown): ToolRequest[] => {
+  if (requests === undefined) return [];
+  return ToolRequestSchema.array().parse(requests);
+};
 
 export interface ModelAdapter {
   readonly provider: string;

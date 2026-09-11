@@ -55,11 +55,34 @@ export const KnowledgeEvidenceReferenceSchema = z.object({
   document_id: nonEmpty.max(128), excerpt: nonEmpty.max(2_000),
 }).strict();
 
+export const ToolRequestSchema = z.object({
+  id: nonEmpty.max(128),
+  name: z.enum([SEARCH_KNOWLEDGE_BASE, GET_SERVICE_STATUS]),
+  version: z.literal(READ_TOOL_VERSION),
+  arguments: z.unknown(),
+}).strict();
+
+const SearchToolResultSchema = z.object({
+  id: nonEmpty.max(128),
+  name: z.literal(SEARCH_KNOWLEDGE_BASE),
+  version: z.literal(READ_TOOL_VERSION),
+  result: SearchKnowledgeResultSchema,
+}).strict();
+const StatusToolResultSchema = z.object({
+  id: nonEmpty.max(128),
+  name: z.literal(GET_SERVICE_STATUS),
+  version: z.literal(READ_TOOL_VERSION),
+  result: ServiceStatusResultSchema,
+}).strict();
+export const ToolResultSchema = z.union([SearchToolResultSchema, StatusToolResultSchema]);
+
 export type SearchKnowledgeInput = z.infer<typeof SearchKnowledgeInputSchema>;
 export type SearchKnowledgeResult = z.infer<typeof SearchKnowledgeResultSchema>;
 export type ServiceStatusInput = z.infer<typeof ServiceStatusInputSchema>;
 export type ServiceStatusResult = z.infer<typeof ServiceStatusResultSchema>;
 export type KnowledgeEvidenceReference = z.infer<typeof KnowledgeEvidenceReferenceSchema>;
+export type ToolRequest = z.infer<typeof ToolRequestSchema>;
+export type ToolResult = z.infer<typeof ToolResultSchema>;
 
 export const KNOWLEDGE_FIXTURES = Object.freeze([
   Object.freeze({ document_id: "kb-billing-pending", title: "Pending billing charges", excerpt: "Pending charges may require billing review before they are treated as settled payments.", score: 0.96, updated_at: "2026-01-15T00:00:00Z" }),
