@@ -19,9 +19,16 @@ export interface RequestCompletionLog {
   readonly path: string;
   readonly status: number;
   readonly duration_ms: number;
+  readonly conversation_id?: string;
+  readonly turn_id?: string;
+  readonly decision_id?: string;
 }
 
 export type RequestLogger = (record: RequestCompletionLog) => void;
+type TriageHandler = (request: Request) => Promise<Response>;
+import type { TriageApplication } from "./triage";
+import { ConversationNotFoundError } from "./triage";
+import { TicketIngestSchema } from "./schemas";
 
 function getRequestId(request: Request): string {
   const providedRequestId = request.headers.get("x-request-id");
@@ -67,6 +74,18 @@ function errorResponse(
   return jsonResponse(body, status, requestId);
 }
 
+const MAX_REQUEST_BYTES = 1_048_576;
+
+function payloadTooLargeResponse(requestId: string): Response {
+  return errorResponse(413, requestId, "payload_too_large", "Request body exceeds the 1 MiB limit", {});
+}
+
+function validationDetails(error: { issues: Array<{ path: PropertyKey[]; message: string }> }) {
+  return {
+    fields: error.issues.map((issue) => ({ path: issue.path.map(String), message: issue.message })),
+  };
+}
+
 function routeRequest(
   request: Request,
   pathname: string,
@@ -98,29 +117,69 @@ const consoleRequestLogger: RequestLogger = (record) => {
 };
 
 export function createRequestHandler(
+  logger?: RequestLogger,
+): (request: Request) => Response;
+export function createRequestHandler(
+  logger: RequestLogger | undefined,
+  triage: TriageApplication,
+): TriageHandler;
+export function createRequestHandler(
   logger: RequestLogger = consoleRequestLogger,
-): (request: Request) => Response {
+  triage?: TriageApplication,
+): (request: Request) => Response | Promise<Response> {
   return (request) => {
     const startedAt = performance.now();
     const { pathname } = new URL(request.url);
     const requestId = getRequestId(request);
-    const response = routeRequest(request, pathname, requestId);
+    const finish = (response: Response, ids?: { conversation_id?: string; turn_id?: string; decision_id?: string }) => {
+      logger({ timestamp: new Date().toISOString(), level: "info", event: "request_completed", request_id: requestId,
+        method: request.method, path: pathname, status: response.status,
+        duration_ms: Math.max(0, Number((performance.now() - startedAt).toFixed(3))), ...ids });
+      return response;
+    };
 
-    logger({
-      timestamp: new Date().toISOString(),
-      level: "info",
-      event: "request_completed",
-      request_id: requestId,
-      method: request.method,
-      path: pathname,
-      status: response.status,
-      duration_ms: Math.max(
-        0,
-        Number((performance.now() - startedAt).toFixed(3)),
-      ),
-    });
-
-    return response;
+    const conversationMatch = pathname.match(/^\/conversations\/([^/]+)$/);
+    if (conversationMatch) {
+      if (request.method !== "GET") {
+        const response = errorResponse(405, requestId, "method_not_allowed", "Method not allowed", { allowed_methods: ["GET"] });
+        response.headers.set("allow", "GET");
+        return finish(response);
+      }
+      if (!triage) return finish(errorResponse(503, requestId, "service_unavailable", "Ticket triage is unavailable", {}));
+      try {
+        const result = triage.getConversation(conversationMatch[1]!);
+        return finish(jsonResponse(result, 200, requestId), { conversation_id: result.conversation_id });
+      } catch (error) {
+        if (error instanceof ConversationNotFoundError) return finish(errorResponse(404, requestId, "not_found", "Conversation not found", { conversation_id: conversationMatch[1] }));
+        return finish(errorResponse(503, requestId, "storage_unavailable", "Conversation storage is temporarily unavailable", {}));
+      }
+    }
+    if (pathname !== "/tickets") return finish(routeRequest(request, pathname, requestId));
+    if (request.method !== "POST") {
+      const response = errorResponse(405, requestId, "method_not_allowed", "Method not allowed", { allowed_methods: ["POST"] });
+      response.headers.set("allow", "POST");
+      return finish(response);
+    }
+    if (!triage) return finish(errorResponse(503, requestId, "service_unavailable", "Ticket triage is unavailable", {}));
+    return (async () => {
+      const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+      if (contentType !== "application/json") return finish(errorResponse(415, requestId, "unsupported_media_type", "Content-Type must be application/json", {}));
+      const declaredLength = Number(request.headers.get("content-length"));
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) return finish(payloadTooLargeResponse(requestId));
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      if (bytes.byteLength > MAX_REQUEST_BYTES) return finish(payloadTooLargeResponse(requestId));
+      let parsed: unknown;
+      try { parsed = JSON.parse(new TextDecoder().decode(bytes)); }
+      catch { return finish(errorResponse(400, requestId, "malformed_json", "Request body is not valid JSON", {})); }
+      const validation = TicketIngestSchema.safeParse(parsed);
+      if (!validation.success) return finish(errorResponse(422, requestId, "invalid_ticket", "Ticket payload failed validation", validationDetails(validation.error)));
+      try {
+        const result = await triage.ingest(validation.data);
+        return finish(jsonResponse(result, 201, requestId), { conversation_id: result.conversation_id, turn_id: result.turn_id, decision_id: result.decision.id });
+      } catch {
+        return finish(errorResponse(503, requestId, "triage_unavailable", "Ticket triage is temporarily unavailable", {}));
+      }
+    })();
   };
 }
 

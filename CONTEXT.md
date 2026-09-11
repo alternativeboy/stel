@@ -162,8 +162,8 @@ Do not spend the assignment budget on authentication, multi-tenancy, polished UI
 
 ## Current state and next step
 
-The Bun/TypeScript foundation is implemented. It includes validated mock/OpenAI configuration, a key-free mock default, `GET /health`, structured HTTP errors, correlated request IDs, safe request-completion logs, and focused tests. No ticket routes, persistence, model adapter, tools, system prompt, or evaluation harness exist yet.
+The Task 02 offline tracer is implemented. It includes validated mock/OpenAI configuration, a key-free mock default, `GET /health`, `POST /tickets`, `GET /conversations/{id}`, file-backed SQLite persistence, a scripted billing adapter, structured HTTP errors, correlated request IDs, safe request-completion logs, and focused tests. The mock adapter is fixture-driven rather than general intelligence; tools, effects, follow-ups, idempotency, recovery, evaluations, and the real OpenAI adapter remain future work.
 
 The user had difficulty reading diagrams in Markdown. Use the visual HTML guide and plain-language walkthroughs when explaining the design. It was opened in the user's browser during this conversation.
 
-The next implementation step is Task 02's Bun-powered mock vertical slice: accept a ticket, persist it, produce a scripted structured decision, and retrieve the conversation. Then add policy-controlled work items, safe retries/recovery, follow-up turns, and failure tests. Keep the OpenAI adapter behind the same TypeScript model interface from the start.
+The next implementation step is Task 03's idempotency slice. Later work adds policy-controlled work items, safe retries/recovery, follow-up turns, and the real OpenAI adapter while keeping the existing TypeScript model interface.
