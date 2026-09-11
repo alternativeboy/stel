@@ -18,7 +18,8 @@ bun install
 Start the service in mock mode; no OpenAI API key is required:
 
 ```sh
-LLM_PROVIDER=mock bun run dev
+LLM_PROVIDER=mock 
+run command: bun run dev
 ```
 
 Startup scans the configured SQLite database for interrupted turns before the
@@ -63,3 +64,22 @@ bun run evaluate --json
 ```
 
 The report is explicitly fixture/replay evaluation, not live GPT accuracy.
+
+Opt-in real-provider mode uses the OpenAI Responses API and requires a
+user-supplied key. It can incur external usage costs; keep it out of normal
+tests:
+
+```sh
+LLM_PROVIDER=openai OPENAI_API_KEY='your-key' OPENAI_MODEL='gpt-4o-mini'
+run command: bun run start
+```
+
+To call only the provider adapter explicitly (also requiring a key), run:
+
+```sh
+OPENAI_API_KEY='your-key' OPENAI_MODEL='gpt-4o-mini'
+run command:  bun run smoke:openai
+```
+
+This smoke command makes one live provider call and does not represent full
+application/effect behavior.

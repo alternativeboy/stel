@@ -1,6 +1,6 @@
 # Support Ticket Triage — System Requirements
 
-Status: living implementation specification, based on [the assignment](../requirement.txt). This document describes the target system; [architecture.md](architecture.md) explains how it fits together. Tasks 01–08 are implemented as an offline scripted tracer with deterministic read-only tools, durable local mock work-item effects, persistent operator/customer follow-up turns, fixture/replay evaluation, and pre-listen startup recovery; the real provider remains planned.
+Status: living implementation specification, based on [the assignment](../requirement.txt). This document describes the target system; [architecture.md](architecture.md) explains how it fits together. Tasks 01–09 are implemented as an offline scripted tracer with deterministic read-only tools, durable local mock work-item effects, persistent operator/customer follow-up turns, fixture/replay evaluation, pre-listen startup recovery, and an opt-in OpenAI Responses adapter. Mock mode remains the default.
 
 The assignment's requirements are mandatory. The stack, policy, limits, labels, and contracts below are proposed choices for meeting them within 8–12 focused hours, not additional instructions from the evaluator.
 
@@ -14,7 +14,7 @@ Request IDs, structured errors/logs, schema validation, close/reopen
 persistence, idempotency, bounded read-only knowledge/status tools,
 policy-gated durable mock work-item effects, persistent follow-ups, offline
 fixture/replay evaluation, and startup recovery are covered by tests. The real
-OpenAI adapter remains deferred.
+The OpenAI adapter is available only through explicit `LLM_PROVIDER=openai` configuration; normal tests and mock mode remain network-free.
 
 The numbered task plan now defines Tasks 01–08 and 09. Task 07 is limited to
 deterministic offline fixture/replay evaluation; Task 08 handles repeatable
