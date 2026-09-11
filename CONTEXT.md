@@ -63,17 +63,18 @@ Never commit real credentials. The assignment says the evaluator will supply an 
 
 | Area | Choice |
 | --- | --- |
-| Language | Python |
-| HTTP | FastAPI |
-| Validation | Pydantic |
+| Language | TypeScript on Node.js |
+| Runtime and package manager | Bun |
+| HTTP | Bun.serve (or a small Bun-compatible framework) |
+| Validation | Zod |
 | Persistence | File-backed SQLite with explicit transactions and unique constraints |
-| Model integration | OpenAI Python SDK, Responses API, function calling, structured outputs |
+| Model integration | OpenAI JavaScript/TypeScript SDK, Responses API, function calling, structured outputs |
 | Knowledge base | Small local JSON/Markdown dataset with deterministic keyword search |
-| Tests | pytest with scripted model and failure-injecting tool adapters |
-| Dependency management | uv with a reproducible dependency lock |
+| Tests | Bun test with scripted model and failure-injecting tool adapters |
+| Dependency management | Bun workspaces and `bun.lock` |
 | Observability | Structured JSON logs linked to durable audit records |
 
-This is the recommended design from the conversation; dependencies and model versions have not been selected or installed. Keep orchestration in ordinary Python. A frontend, agent framework, vector database, Redis, or separate background-worker service is unnecessary for the MVP.
+This is the recommended design from the conversation; dependencies and model versions have not been selected or installed. Keep orchestration in ordinary TypeScript. A frontend, agent framework, vector database, Redis, or separate background-worker service is unnecessary for the MVP.
 
 ## Architecture and execution
 
@@ -165,4 +166,4 @@ Only the original assignment and design/context documents have been created or r
 
 The user had difficulty reading diagrams in Markdown. Use the visual HTML guide and plain-language walkthroughs when explaining the design. It was opened in the user's browser during this conversation.
 
-When implementation is requested, begin with a mock-powered vertical slice: accept a ticket, persist it, produce a scripted structured decision, and retrieve the conversation. Then add policy-controlled work items, safe retries/recovery, follow-up turns, and failure tests. Keep the OpenAI adapter behind the same model interface from the start. This context-file request does not itself request application implementation.
+When implementation is requested, begin with a Bun-powered mock vertical slice: accept a ticket, persist it, produce a scripted structured decision, and retrieve the conversation. Then add policy-controlled work items, safe retries/recovery, follow-up turns, and failure tests. Keep the OpenAI adapter behind the same TypeScript model interface from the start. This context-file request does not itself request application implementation.
