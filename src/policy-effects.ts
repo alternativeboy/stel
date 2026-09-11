@@ -54,6 +54,30 @@ export const EffectFailureSchema = z.object({
 }).strict();
 export const EnsureWorkItemResultSchema = z.union([EffectSuccessSchema, EffectFailureSchema]);
 
+export const StoredWorkItemSchema = z.object({
+  id: identifier,
+  conversation_id: identifier,
+  kind: WorkItemKindSchema,
+  queue: WorkItemQueueSchema,
+  operation_key: identifier.max(512),
+  intent: EnsureWorkItemInputSchema,
+  status: EffectStatusSchema,
+  provider: nonEmpty.max(128),
+  receipt: ConfirmedReceiptSchema.nullable(),
+  created_at: timestamp,
+  updated_at: timestamp,
+}).strict();
+export const StoredEffectAttemptSchema = z.object({
+  id: identifier,
+  work_item_id: identifier,
+  turn_id: identifier.nullable(),
+  tool_call_id: identifier.nullable(),
+  status: EffectStatusSchema,
+  result: EnsureWorkItemResultSchema.nullable(),
+  started_at: timestamp,
+  completed_at: timestamp.nullable(),
+}).strict();
+
 export const PolicyOverrideSchema = z.object({
   reason: nonEmpty.max(256),
   action: z.literal("escalate_to_human"),
@@ -79,6 +103,8 @@ export type EffectStatus = z.infer<typeof EffectStatusSchema>;
 export type ConfirmedReceipt = z.infer<typeof ConfirmedReceiptSchema>;
 export type EnsureWorkItemResult = z.infer<typeof EnsureWorkItemResultSchema>;
 export type PolicyOutcome = z.infer<typeof PolicyOutcomeSchema>;
+export type StoredWorkItem = z.infer<typeof StoredWorkItemSchema>;
+export type StoredEffectAttempt = z.infer<typeof StoredEffectAttemptSchema>;
 
 export function deriveOperationIdentity(conversationId: string, kind: WorkItemKind, queue: WorkItemQueue): OperationIdentity {
   const identity = OperationIdentitySchema.parse({
