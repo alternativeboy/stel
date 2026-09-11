@@ -18,6 +18,8 @@ export interface OpenAIConfiguration extends CommonConfiguration {
   readonly llmProvider: "openai";
   readonly openaiApiKey: string;
   readonly openaiModel: string;
+  readonly openaiTimeoutMs: number;
+  readonly openaiMaxRetries: number;
 }
 
 export type Configuration = MockConfiguration | OpenAIConfiguration;
@@ -49,6 +51,7 @@ const portSchema = z
   .regex(/^\d+$/, "must be an integer between 1 and 65535")
   .transform(Number)
   .pipe(z.number().int().min(1).max(65535));
+const timeoutSchema = z.string().trim().regex(/^\d+$/, "must be an integer between 1000 and 120000").transform(Number).pipe(z.number().int().min(1000).max(120000));
 
 const environmentSchema = z
   .object({
@@ -58,6 +61,8 @@ const environmentSchema = z
     DATABASE_PATH: z.string().trim().min(1, "must not be empty").optional(),
     OPENAI_API_KEY: z.string().optional(),
     OPENAI_MODEL: z.string().optional(),
+    OPENAI_TIMEOUT_MS: z.preprocess((value) => value ?? "30000", timeoutSchema).optional(),
+    OPENAI_MAX_RETRIES: z.preprocess((value) => value ?? "2", z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(0).max(3))).optional(),
   })
   .superRefine((environment, context) => {
     if (environment.LLM_PROVIDER !== "openai") {
@@ -115,5 +120,7 @@ export function parseConfiguration(
     ...common,
     openaiApiKey: result.data.OPENAI_API_KEY!.trim(),
     openaiModel: result.data.OPENAI_MODEL!.trim(),
+    openaiTimeoutMs: result.data.OPENAI_TIMEOUT_MS ?? 30000,
+    openaiMaxRetries: result.data.OPENAI_MAX_RETRIES ?? 2,
   });
 }

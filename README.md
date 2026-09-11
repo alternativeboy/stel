@@ -63,3 +63,20 @@ bun run evaluate --json
 ```
 
 The report is explicitly fixture/replay evaluation, not live GPT accuracy.
+
+Opt-in real-provider mode uses the OpenAI Responses API and requires a
+user-supplied key. It can incur external usage costs; keep it out of normal
+tests:
+
+```sh
+LLM_PROVIDER=openai OPENAI_API_KEY='your-key' OPENAI_MODEL='gpt-4o-mini' bun run start
+```
+
+To call only the provider adapter explicitly (also requiring a key), run:
+
+```sh
+OPENAI_API_KEY='your-key' OPENAI_MODEL='gpt-4o-mini' bun run smoke:openai
+```
+
+This smoke command makes one live provider call and does not represent full
+application/effect behavior.

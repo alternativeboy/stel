@@ -55,7 +55,7 @@ OPENAI_API_KEY=<provided through the environment>
 OPENAI_MODEL=<configured supported GPT model>
 ```
 
-These settings are planned, not implemented. Use OpenAI as the delivered configuration default, with an explicit documented mock development command. OpenAI mode must fail clearly if its required configuration is missing; never silently fall back to mock mode. Require no key for mock mode and automated tests.
+These settings are implemented for the opt-in OpenAI Responses adapter. Mock remains the default development mode, and OpenAI mode must fail clearly if its required configuration is missing; never silently fall back to mock mode. Require no key for mock mode and automated tests.
 
 Never commit real credentials. The assignment says the evaluator will supply an OpenAI key. Do not make paid API calls without user authorization. Before claiming the OpenAI integration works, run an authorized live check; if that cannot happen before submission, explicitly disclose the lack of live validation. Mock success does not prove GPT integration or triage quality.
 
@@ -162,8 +162,8 @@ Do not spend the assignment budget on authentication, multi-tenancy, polished UI
 
 ## Current state and next step
 
-The Task 02 offline tracer is implemented. It includes validated mock/OpenAI configuration, a key-free mock default, `GET /health`, `POST /tickets`, `GET /conversations/{id}`, file-backed SQLite persistence, a scripted billing adapter, structured HTTP errors, correlated request IDs, safe request-completion logs, and focused tests. The mock adapter is fixture-driven rather than general intelligence; tools, effects, follow-ups, idempotency, recovery, evaluations, and the real OpenAI adapter remain future work.
+The offline tracer and opt-in provider path are implemented. The service includes validated configuration, a key-free mock default, `GET /health`, ticket/conversation/follow-up routes, file-backed SQLite persistence, scripted billing triage, read-only tools, policy-gated mock effects, idempotency, recovery, fixture evaluation, structured errors/logs, and an injectable OpenAI Responses adapter. The mock adapter is fixture-driven rather than general intelligence.
 
 The user had difficulty reading diagrams in Markdown. Use the visual HTML guide and plain-language walkthroughs when explaining the design. It was opened in the user's browser during this conversation.
 
-The next implementation step is Task 03's idempotency slice. Later work adds policy-controlled work items, safe retries/recovery, follow-up turns, and the real OpenAI adapter while keeping the existing TypeScript model interface.
+The next work should focus on provider hardening and reconciliation rather than adding another adapter; the OpenAI path remains explicitly opt-in and live validation requires user authorization.

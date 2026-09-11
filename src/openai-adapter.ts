@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { ProviderFailureSchema, ProviderRequestSchema, ProviderResponseSchema, TRIAGE_PROMPT_HASH, TRIAGE_PROMPT_VERSION, type ProviderFailure, type ProviderSettings } from "./provider-contracts";
 import type { ModelAdapter, ModelContext, ModelProposal } from "./model";
 
@@ -49,7 +50,7 @@ async function readResponseBody(response: Response, controller: AbortController,
 
 export function createOpenAIAdapter(settings: ProviderSettings, options: { transport?: Transport; prompt?: string; prompt_hash?: string } = {}): ModelAdapter {
   const transport = options.transport ?? fetch;
-  const promptPromise = options.prompt ? Promise.resolve(options.prompt) : Bun.file(new URL("../prompts/triage.v1.md", import.meta.url).pathname).text();
+  const promptPromise = Promise.resolve(options.prompt ?? readFileSync(new URL("../prompts/triage.v1.md", import.meta.url), "utf8"));
   return { provider: "openai", model_adapter: "openai-responses-v1", scenario: "live", async propose(context: ModelContext) {
     let prompt: string;
     try { prompt = await promptPromise; } catch { throw invalid("OpenAI prompt could not be loaded."); }

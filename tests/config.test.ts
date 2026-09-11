@@ -50,6 +50,15 @@ describe("runtime configuration", () => {
     expect(Object.isFrozen(config)).toBe(true);
   });
 
+  test("validates OpenAI timeout and retry bounds", () => {
+    const config = parseConfiguration({ LLM_PROVIDER: "openai", OPENAI_API_KEY: "key", OPENAI_MODEL: "model", OPENAI_TIMEOUT_MS: "120000", OPENAI_MAX_RETRIES: "3" });
+    if (config.llmProvider !== "openai") throw new Error("Expected OpenAI configuration");
+    expect(config.openaiTimeoutMs).toBe(120000);
+    expect(config.openaiMaxRetries).toBe(3);
+    expect(() => parseConfiguration({ LLM_PROVIDER: "openai", OPENAI_API_KEY: "key", OPENAI_MODEL: "model", OPENAI_TIMEOUT_MS: "999" })).toThrow();
+    expect(() => parseConfiguration({ LLM_PROVIDER: "openai", OPENAI_API_KEY: "key", OPENAI_MODEL: "model", OPENAI_TIMEOUT_MS: "120001" })).toThrow();
+  });
+
   test("rejects an unsupported provider", () => {
     expect(() =>
       parseConfiguration({ LLM_PROVIDER: "anthropic" }),

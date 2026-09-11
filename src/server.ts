@@ -8,12 +8,14 @@ import { createMockWorkItemExecutor } from "./effects";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createRecoveryService } from "./recovery-service";
+import { createOpenAIAdapter } from "./openai-adapter";
+import { ProviderSettingsSchema, TRIAGE_PROMPT_HASH, TRIAGE_PROMPT_VERSION } from "./provider-contracts";
 
 try {
   const config = parseConfiguration(Bun.env);
-  if (config.llmProvider === "openai") {
-    throw new Error("OpenAI provider is not available in this build; refusing to start");
-  }
+  const model = config.llmProvider === "openai"
+    ? createOpenAIAdapter(ProviderSettingsSchema.parse({ api_key: config.openaiApiKey, model: config.openaiModel, timeout_ms: config.openaiTimeoutMs, max_retries: config.openaiMaxRetries, prompt_version: TRIAGE_PROMPT_VERSION, prompt_hash: TRIAGE_PROMPT_HASH }))
+    : createScriptedBillingAdapter();
   const databasePath = config.databasePath ?? "./data/service.sqlite";
   await mkdir(dirname(databasePath), { recursive: true });
   const storage = openStorage(databasePath);
@@ -21,7 +23,7 @@ try {
   await createRecoveryService({ storage, effect }).recover();
   const application = createTriageApplication({
     storage,
-    model: createScriptedBillingAdapter(),
+    model,
     knowledge: createLocalKnowledgeBase(),
     status: createLocalServiceStatus(),
     effect,
