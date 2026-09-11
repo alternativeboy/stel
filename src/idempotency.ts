@@ -19,13 +19,13 @@ export const RequestFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export type RequestFingerprint = z.infer<typeof RequestFingerprintSchema>;
 
 export const IdempotencyConflictDetailsSchema = z.object({
-  reason: z.literal("different_body"),
+  reason: z.enum(["different_body", "processing"]),
 }).strict();
 
 export const RequestResolutionSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("claimed"), state: z.literal("processing"), turn_id: z.string().min(1) }).strict(),
   z.object({ outcome: z.literal("replay"), state: z.literal("completed"), response: TicketResponseSchema }).strict(),
-  z.object({ outcome: z.literal("conflict"), state: z.literal("conflict"), retryable: z.literal(false), details: IdempotencyConflictDetailsSchema }).strict(),
+  z.object({ outcome: z.literal("conflict"), state: z.literal("conflict"), retryable: z.boolean(), details: IdempotencyConflictDetailsSchema }).strict(),
 ]);
 
 export type RequestResolution = z.infer<typeof RequestResolutionSchema>;
