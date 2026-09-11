@@ -6,7 +6,7 @@ Status: proposed design for the [system requirements](system-requirements.md), n
 
 ## 1. Architecture at a glance
 
-Use a modular monolith: one Python application, organized into modules with small interfaces. Run FastAPI, a bounded agent loop, policy checks, and persistence in one process. Use SQLite for durable local state and a mocked work-item provider. This keeps the weekend focused on the complete request-to-decision-to-effect flow.
+Use a modular monolith: one TypeScript application running on Bun, organized into modules with small interfaces. Run the Bun HTTP server, a bounded agent loop, policy checks, and persistence in one process. Use SQLite for durable local state and a mocked work-item provider. This keeps the weekend focused on the complete request-to-decision-to-effect flow.
 
 Read from top to bottom. The branches show the modules the triage application coordinates. These diagrams use plain text and need no diagram extension.
 
@@ -48,13 +48,13 @@ The agent interprets language. The application determines which operations may r
 
 | Choice | Reason | Alternative deferred |
 | --- | --- | --- |
-| Python + FastAPI + Pydantic | Small HTTP layer with typed request/response validation and generated API documentation. | TypeScript is equally reasonable if more familiar; a stack rewrite brings no assignment benefit. |
-| OpenAI SDK, Responses API, custom tools and structured output | Explicit tool execution and a machine-readable decision without a large agent framework. | A graph framework is unnecessary for this bounded workflow. |
+| TypeScript + Bun.serve + Zod | Small HTTP layer with typed request/response validation and one runtime for scripts, tests, and the server. | Fastify can be added if the route surface grows, but it is not needed for this MVP. |
+| OpenAI JavaScript SDK, Responses API, custom tools and structured output | Explicit tool execution and a machine-readable decision without a large agent framework. | A graph framework is unnecessary for this bounded workflow. |
 | SQLite with explicit transactions and a schema initialization script | Durable storage with little local setup; easy crash/retry tests. | Postgres becomes useful with multiple application processes and higher write concurrency. |
 | Small JSON/Markdown KB with deterministic keyword search | Enough to demonstrate retrieval, relevance, citations, and empty results. | Embeddings/vector storage add scope before retrieval quality is shown to need them. |
-| pytest and a small evaluation CLI | Exercise the same application interface using fake model/tool adapters. | Hosted evaluation infrastructure is unnecessary for submission. |
+| Bun test and a small evaluation CLI | Exercise the same application interface using fake model/tool adapters. | Hosted evaluation infrastructure is unnecessary for submission. |
 
-FastAPI supports request validation from declared models. [Official request-body documentation](https://fastapi.tiangolo.com/tutorial/body/).
+Zod schemas should validate both HTTP input and model/tool output at runtime. TypeScript types alone disappear at runtime, so every untrusted boundary needs schema parsing.
 
 OpenAI function calling lets the model request operations that the application executes; structured outputs constrain a response to a supplied schema. Neither replaces policy checks or factual validation. Handle refusal and incomplete responses explicitly. [Function calling](https://developers.openai.com/api/docs/guides/function-calling), [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
 
@@ -206,20 +206,20 @@ Preserve unresolved issues from prior turns, but allow later evidence to correct
 ## 9. Proposed project layout and build order
 
 ```text
-app/
-  main.py                 # FastAPI wiring and startup recovery
-  api.py                  # Endpoints and error mapping
-  schemas.py              # HTTP, decision, and tool contracts
-  triage.py               # Application interface and turn lifecycle
-  agent.py                # Bounded evidence-gathering/model loop
-  policy.py               # Deterministic autonomy rules
-  effects.py              # Safe work-item execution
-  storage.py              # SQLite transactions and queries
+src/
+  server.ts               # Bun HTTP wiring and startup recovery
+  api.ts                  # Endpoints and error mapping
+  schemas.ts              # Zod HTTP, decision, and tool contracts
+  triage.ts               # Application interface and turn lifecycle
+  agent.ts                # Bounded evidence-gathering/model loop
+  policy.ts               # Deterministic autonomy rules
+  effects.ts              # Safe work-item execution
+  storage.ts              # SQLite transactions and queries
   adapters/
-    openai_model.py
-    knowledge_base.py
-    service_status.py
-    work_items.py
+    openai-model.ts
+    knowledge-base.ts
+    service-status.ts
+    work-items.ts
 prompts/
   triage.v1.md
   rationale.md
@@ -228,7 +228,7 @@ data/
 evals/
   tickets.jsonl
   fixtures/
-  run.py
+  run.ts
 tests/
 docs/
   system-requirements.md

@@ -71,7 +71,7 @@ Never commit real credentials. The assignment says the evaluator will supply an 
 | Model integration | OpenAI JavaScript/TypeScript SDK, Responses API, function calling, structured outputs |
 | Knowledge base | Small local JSON/Markdown dataset with deterministic keyword search |
 | Tests | Bun test with scripted model and failure-injecting tool adapters |
-| Dependency management | Bun workspaces and `bun.lock` |
+| Dependency management | Bun with its generated lockfile (`bun.lockb` on the currently installed Bun 1.1.17; `bun.lock` after an intentional runtime upgrade) |
 | Observability | Structured JSON logs linked to durable audit records |
 
 This is the recommended design from the conversation; dependencies and model versions have not been selected or installed. Keep orchestration in ordinary TypeScript. A frontend, agent framework, vector database, Redis, or separate background-worker service is unnecessary for the MVP.

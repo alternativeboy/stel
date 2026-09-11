@@ -43,3 +43,9 @@ temp/
 .vscode/
 *.swp
 *.swo
+
+# Local assignment and planning documents
+requirement.txt
+tasks.md
+docs/architecture.*
+prompts/
