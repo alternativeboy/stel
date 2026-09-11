@@ -4,8 +4,9 @@ import { ToolRequestSchema, type ToolRequest, type ToolResult } from "./read-too
 export interface ModelContext {
   turn_id: string;
   ticket: TicketIngest;
-  messages: Array<TicketIngest["messages"][number] & { id: string }>;
+  messages: Array<{ id: string; role: "customer" | "support" | "operator"; content: string; timestamp: string }>;
   tool_results?: ToolResult[];
+  prior_decisions?: Decision[];
 }
 
 export interface ModelProposal {

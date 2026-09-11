@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DecisionSchema, TicketResponseSchema, TicketIngestSchema, ConversationReadSchema, type TicketIngest, type TicketResponse, type ConversationRead } from "./schemas";
-import { claimRequest, loadConversation, loadConversationEffects, saveCompletedInitialTriage, type InitialTriageAggregate, type Storage } from "./storage";
+import { claimFollowUpRequest, claimRequest, loadConversation, loadConversationEffects, loadConversationHistory, saveCompletedFollowUp, saveCompletedInitialTriage, type InitialTriageAggregate, type Storage } from "./storage";
 import { fingerprintRequestBody } from "./idempotency";
 import type { ModelAdapter, ModelContext } from "./model";
 import { validateToolRequests } from "./model";
@@ -8,11 +8,13 @@ import { GET_SERVICE_STATUS, SEARCH_KNOWLEDGE_BASE, SearchKnowledgeInputSchema, 
 import type { KnowledgeBaseSearch, ServiceStatusLookup } from "./read-tool-adapters";
 import { EnsureWorkItemInputSchema, EnsureWorkItemResultSchema, ENSURE_WORK_ITEM, deriveOperationIdentity, evaluatePolicy, type EnsureWorkItemInput } from "./policy-effects";
 import type { WorkItemEffectExecutor } from "./effects";
+import { FollowUpMessageSchema } from "./follow-up";
 
 const MAX_TOOL_CALLS = 3;
 
 export interface TriageApplication {
   ingest(input: TicketIngest, request?: { scope: string; key: string }): Promise<TicketResponse>;
+  continueConversation(conversationId: string, message: import("./follow-up").FollowUpMessage, request: { scope: string; key: string }): Promise<TicketResponse>;
   getConversation(id: string): ConversationRead;
 }
 
@@ -59,6 +61,89 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
         if (error instanceof Error && error.message === "conversation not found") throw new ConversationNotFoundError(id);
         throw error;
       }
+    },
+    async continueConversation(conversationId, rawMessage, request) {
+      const message = FollowUpMessageSchema.parse(rawMessage);
+      const history = loadConversationHistory(dependencies.storage, conversationId);
+      const turnId = randomUUID();
+      const messageId = randomUUID();
+      const startedAt = new Date().toISOString();
+      const fingerprint = fingerprintRequestBody({ conversation_id: conversationId, message });
+      const claim = claimFollowUpRequest(dependencies.storage, {
+        conversation_id: conversationId, ...request, fingerprint, turn_id: turnId,
+        provider: dependencies.model.provider, model_adapter: dependencies.model.model_adapter,
+        mock_scenario: dependencies.model.scenario, decision_schema_version: "decision.v1", started_at: startedAt,
+      });
+      if (claim.outcome === "replay") return claim.response;
+      if (claim.outcome === "conflict") throw new IdempotencyConflictError({ retryable: claim.retryable, reason: claim.details.reason });
+      const initialMessages = history.messages.filter((item) => item.role !== "assistant" && (item.role === "customer" || item.role === "support")).map(({ role, content, timestamp }) => ({ role, content, timestamp }));
+      const modelMessages = history.messages.filter((item) => item.role !== "assistant" && item.timestamp !== null).map(({ role, content, timestamp, id }) => ({ role, content, timestamp: timestamp!, id })) as ModelContext["messages"];
+      modelMessages.push({ ...message, id: messageId });
+      const context: ModelContext = { turn_id: turnId, ticket: TicketIngestSchema.parse({ customer: history.conversation.customer, messages: initialMessages }), messages: modelMessages, tool_results: [], prior_decisions: history.decisions };
+      let proposal;
+      try {
+        proposal = await dependencies.model.propose(context);
+      } catch {
+        const completedAt = new Date().toISOString();
+        const degraded = TicketResponseSchema.parse({ conversation_id: conversationId, turn_id: turnId, reply: "A human operator is needed to continue this conversation.", decision: { id: `decision-${turnId}`, turn_id: turnId, schema_version: "decision.v1", urgency: "high", extracted: { product_area: "unknown", primary_issue_type: "unknown", secondary_issue_types: [], sentiment: "unknown", language: "unknown" }, action: "escalate_to_human", target_queue: "manual_triage", rationale: "The follow-up model response was unavailable; manual triage is required.", evidence: [], knowledge_refs: [], unresolved_questions: [], requires_human: true, execution: { status: "unknown" }, tool_call_ids: [], status: "degraded" } });
+        saveCompletedFollowUp(dependencies.storage, { conversation_id: conversationId, request: { scope: request.scope, key: request.key as import("./idempotency").IdempotencyKey, fingerprint, turn_id: turnId, created_at: startedAt, completed_at: completedAt }, turn: { id: turnId, provider: dependencies.model.provider, model_adapter: dependencies.model.model_adapter, mock_scenario: dependencies.model.scenario, decision_schema_version: "decision.v1", started_at: startedAt, completed_at: completedAt }, message: { id: messageId, ...message }, response: degraded });
+        return degraded;
+      }
+      const requests = validateToolRequests(proposal.tool_requests);
+      const toolIds: string[] = [];
+      const knowledgeRefs: string[] = [];
+      let effectRequest: { id: string; input: EnsureWorkItemInput } | undefined;
+      for (let round = 0; ; round += 1) {
+        let currentRequests;
+        try { currentRequests = validateToolRequests(proposal.tool_requests); } catch { throw new ToolLoopError("Tool request is invalid."); }
+        if (currentRequests.length === 0) break;
+        if (currentRequests.length + toolIds.length > MAX_TOOL_CALLS) throw new ToolLoopError("Tool call limit exceeded.");
+        if (currentRequests.some((tool, index) => currentRequests.findIndex((candidate) => candidate.id === tool.id) !== index || toolIds.includes(tool.id))) throw new ToolLoopError("Tool request IDs must be unique.");
+        const requestedEffect = currentRequests.find((item) => item.name === ENSURE_WORK_ITEM);
+        if (requestedEffect) {
+          if (currentRequests.length !== 1) throw new ToolLoopError("Effect requests must be made after read tools.");
+          try { effectRequest = { id: requestedEffect.id, input: EnsureWorkItemInputSchema.parse(requestedEffect.arguments) }; } catch { throw new ToolLoopError("Work-item arguments are invalid."); }
+          break;
+        }
+        const results: ToolResult[] = [];
+        for (const tool of currentRequests) {
+          let result: ToolResult["result"];
+          try {
+            if (tool.name === SEARCH_KNOWLEDGE_BASE) {
+              if (!dependencies.knowledge) throw new Error();
+              result = dependencies.knowledge.search(SearchKnowledgeInputSchema.parse(tool.arguments));
+              if (result.status === "ok") knowledgeRefs.push(...result.matches.map((match) => match.document_id));
+            } else if (tool.name === GET_SERVICE_STATUS) {
+              if (!dependencies.status) throw new Error();
+              result = dependencies.status.lookup(ServiceStatusInputSchema.parse(tool.arguments));
+            } else throw new Error();
+            results.push(ToolResultSchema.parse({ id: tool.id, name: tool.name, version: tool.version, result }));
+          } catch { throw new ToolLoopError("Tool request or result is invalid."); }
+          toolIds.push(tool.id);
+        }
+        context.tool_results = [...(context.tool_results ?? []), ...results];
+        proposal = await dependencies.model.propose(context);
+        if (round >= MAX_TOOL_CALLS) throw new ToolLoopError("Tool call limit exceeded.");
+      }
+      const candidate = DecisionSchema.parse(proposal.decision);
+      const policy = evaluatePolicy(candidate);
+      let finalDecision = policy.status === "accepted" ? candidate : DecisionSchema.parse({ ...candidate, action: "escalate_to_human", target_queue: "manual_triage", requires_human: true, execution: { status: "unknown" } });
+      const expectedKind = candidate.target_queue === "operations" ? "incident" : "specialist_case";
+      const messageIds = new Set(modelMessages.map((item) => item.id));
+      const effectMatches = effectRequest && candidate.action !== "auto_respond" && candidate.target_queue === effectRequest.input.queue && expectedKind === effectRequest.input.kind && effectRequest.input.evidence_refs.every((ref) => messageIds.has(ref.message_id));
+      if (effectRequest && !effectMatches) finalDecision = DecisionSchema.parse({ ...candidate, action: "escalate_to_human", target_queue: "manual_triage", requires_human: true, execution: { status: "unknown" } });
+      if (effectRequest && effectMatches && dependencies.effect && policy.status === "accepted") {
+        toolIds.push(effectRequest.id);
+        try {
+          const result = EnsureWorkItemResultSchema.parse(await dependencies.effect.ensure(effectRequest.input, deriveOperationIdentity(conversationId, effectRequest.input.kind, effectRequest.input.queue), { turn_id: turnId, tool_call_id: effectRequest.id }));
+          finalDecision = DecisionSchema.parse({ ...finalDecision, execution: result.status === "succeeded" || result.status === "reused" ? { status: "succeeded", work_item_id: result.receipt.work_item_id } : { status: result.status } });
+        } catch { finalDecision = DecisionSchema.parse({ ...finalDecision, execution: { status: "unknown" } }); }
+      } else if (effectRequest && effectMatches && !dependencies.effect) {
+        finalDecision = DecisionSchema.parse({ ...finalDecision, execution: { status: "unknown" } });
+      }
+      const response = TicketResponseSchema.parse({ conversation_id: conversationId, turn_id: turnId, reply: proposal.reply, decision: { ...finalDecision, tool_call_ids: toolIds, knowledge_refs: [...new Set(knowledgeRefs)] } });
+      saveCompletedFollowUp(dependencies.storage, { conversation_id: conversationId, request: { scope: request.scope, key: request.key as import("./idempotency").IdempotencyKey, fingerprint, turn_id: turnId, created_at: startedAt, completed_at: new Date().toISOString() }, turn: { id: turnId, provider: dependencies.model.provider, model_adapter: dependencies.model.model_adapter, mock_scenario: dependencies.model.scenario, decision_schema_version: response.decision.schema_version, started_at: startedAt, completed_at: new Date().toISOString() }, message: { id: messageId, ...message }, response });
+      return response;
     },
     async ingest(input, request = { scope: "legacy", key: `initial-${randomUUID()}` }) {
       const ticket = TicketIngestSchema.parse(input);
