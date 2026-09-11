@@ -4,6 +4,7 @@ import { openStorage } from "./storage";
 import { createScriptedBillingAdapter } from "./model";
 import { createTriageApplication } from "./triage";
 import { createLocalKnowledgeBase, createLocalServiceStatus } from "./read-tool-adapters";
+import { createMockWorkItemExecutor } from "./effects";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -20,6 +21,7 @@ try {
     model: createScriptedBillingAdapter(),
     knowledge: createLocalKnowledgeBase(),
     status: createLocalServiceStatus(),
+    effect: createMockWorkItemExecutor(storage),
   });
   const handleRequest = createRequestHandler(undefined, application);
   const server = Bun.serve({

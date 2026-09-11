@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DecisionSchema, TicketResponseSchema, TicketIngestSchema, ConversationReadSchema, type TicketIngest, type TicketResponse, type ConversationRead } from "./schemas";
-import { claimRequest, loadConversation, saveCompletedInitialTriage, type InitialTriageAggregate, type Storage } from "./storage";
+import { claimRequest, loadConversation, loadConversationEffects, saveCompletedInitialTriage, type InitialTriageAggregate, type Storage } from "./storage";
 import { fingerprintRequestBody } from "./idempotency";
 import type { ModelAdapter, ModelContext } from "./model";
 import { validateToolRequests } from "./model";
@@ -33,6 +33,7 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
     getConversation(id) {
       try {
         const aggregate = loadConversation(dependencies.storage, id);
+        const storedEffects = loadConversationEffects(dependencies.storage, id);
         return ConversationReadSchema.parse({
           conversation_id: aggregate.conversation.id,
           customer: aggregate.conversation.customer,
@@ -43,6 +44,16 @@ export function createTriageApplication(dependencies: { storage: Storage; model:
           turn: aggregate.turn,
           decisions: [aggregate.decision],
           tool_calls: [],
+          effects: storedEffects.work_items.map((item) => ({
+          work_item_id: item.id,
+          kind: item.kind,
+          queue: item.queue,
+          operation_key: item.operation_key,
+          status: item.status,
+          provider: item.provider,
+          receipt: item.receipt,
+          attempts: storedEffects.attempts.filter((attempt) => attempt.work_item_id === item.id).map((attempt) => ({ id: attempt.id, status: attempt.status, tool_call_id: attempt.tool_call_id, result: attempt.result })),
+          })),
         });
       } catch (error) {
         if (error instanceof Error && error.message === "conversation not found") throw new ConversationNotFoundError(id);

@@ -172,6 +172,16 @@ export const ConversationReadSchema = z.object({
   }).strict(),
   decisions: z.array(DecisionSchema),
   tool_calls: z.array(z.never()),
+  effects: z.array(z.object({
+    work_item_id: identifierSchema,
+    kind: z.enum(["specialist_case", "incident"]),
+    queue: z.enum(["billing", "product_support", "operations", "manual_triage"]),
+    operation_key: identifierSchema,
+    status: z.enum(["pending", "succeeded", "failed", "unknown"]),
+    provider: nonEmptyStringSchema,
+    receipt: z.object({ work_item_id: identifierSchema, status: z.literal("succeeded"), created_at: z.string().datetime({ offset: true }), reused: z.boolean() }).nullable(),
+    attempts: z.array(z.object({ id: identifierSchema, status: z.enum(["pending", "succeeded", "failed", "unknown"]), tool_call_id: identifierSchema.nullable(), result: z.unknown().nullable() }).strict()),
+  }).strict()).default([]),
 }).strict();
 
 export type ConversationRead = z.infer<typeof ConversationReadSchema>;
