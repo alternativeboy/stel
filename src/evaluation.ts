@@ -61,6 +61,8 @@ export const EvaluationActualFactsSchema = z.object({
   primary_issue_type: boundedText.max(128).nullable(),
   knowledge_refs: z.array(identifier).max(16),
   effect_status: z.enum(["not_required", "succeeded", "failed", "unknown"]).nullable(),
+  effect_kind: WorkItemKindSchema.nullable(),
+  effect_queue: WorkItemQueueSchema.nullable(),
 }).strict();
 
 export const EvaluationCaseResultSchema = z.object({

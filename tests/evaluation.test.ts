@@ -22,7 +22,7 @@ describe("offline evaluation contracts and fixtures", () => {
     const expected = EVALUATION_CASES[0]!.expected;
     const result = EvaluationCaseResultSchema.parse({
       case_id: "billing-001", status: "passed", schema_valid: true, expected,
-      actual: { urgency: "high", action: "route_to_specialist", target_queue: "billing", language: "en", primary_issue_type: "payment_and_access", knowledge_refs: [], effect_status: "succeeded" },
+      actual: { urgency: "high", action: "route_to_specialist", target_queue: "billing", language: "en", primary_issue_type: "payment_and_access", knowledge_refs: [], effect_status: "succeeded", effect_kind: "specialist_case", effect_queue: "billing" },
       safety_violations: [],
     });
     expect(JSON.stringify(EVALUATION_CASES)).not.toMatch(/sk-[A-Za-z0-9]{8,}|OPENAI_API_KEY/);
