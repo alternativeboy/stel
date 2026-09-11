@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Tests and coverage
+coverage/
+.nyc_output/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+data/*.sqlite3
+data/*.sqlite3-*
+*.db-journal
+*.sqlite-journal
+*.sqlite3-journal
+
+# Logs and process files
+*.log
+logs/
+*.pid
+
+# Temporary files
+tmp/
+temp/
+.cache/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
