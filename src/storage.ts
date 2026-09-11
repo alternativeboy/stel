@@ -27,6 +27,10 @@ export interface InitialTriageAggregate {
   request: {
     id: string;
     key: string;
+    scope?: string;
+    fingerprint?: string;
+    cached_response?: TicketResponse;
+    cached_status?: number;
     state: "completed";
     created_at: string;
     completed_at: string;
@@ -54,6 +58,14 @@ export interface RequestClaim {
   fingerprint: RequestFingerprint;
   conversation_id: string;
   turn_id: string;
+  initial?: {
+    customer: CustomerMetadata;
+    provider: string;
+    model_adapter: string;
+    mock_scenario: string;
+    decision_schema_version: string;
+    started_at: string;
+  };
 }
 
 export interface StoredRequest {
@@ -83,6 +95,19 @@ const requestsTable = `CREATE TABLE IF NOT EXISTS requests (
     UNIQUE (endpoint_scope, request_key)
   );`;
 
+const turnsTable = `CREATE TABLE IF NOT EXISTS turns (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    state TEXT NOT NULL CHECK (state IN ('processing', 'completed')),
+    provider TEXT NOT NULL,
+    model_adapter TEXT NOT NULL,
+    mock_scenario TEXT NOT NULL,
+    decision_schema_version TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE (id, conversation_id)
+  );`;
+
 const schema = `
   PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS conversations (
@@ -90,18 +115,7 @@ const schema = `
     customer_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
-  CREATE TABLE IF NOT EXISTS turns (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL REFERENCES conversations(id),
-    state TEXT NOT NULL CHECK (state = 'completed'),
-    provider TEXT NOT NULL,
-    model_adapter TEXT NOT NULL,
-    mock_scenario TEXT NOT NULL,
-    decision_schema_version TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    completed_at TEXT NOT NULL,
-    UNIQUE (id, conversation_id)
-  );
+  ${turnsTable}
   ${requestsTable}
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
@@ -136,6 +150,14 @@ export function openStorage(path: string): Storage {
       FROM requests_legacy;`);
     db.exec("DROP TABLE requests_legacy;");
   }
+  const turnDefinition = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'").get() as { sql: string } | null;
+  if (turnDefinition?.sql.includes("state = 'completed'")) {
+    db.exec("ALTER TABLE turns RENAME TO turns_legacy;");
+    db.exec(turnsTable);
+    db.exec(`INSERT INTO turns (id, conversation_id, state, provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at)
+      SELECT id, conversation_id, 'completed', provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at FROM turns_legacy;`);
+    db.exec("DROP TABLE turns_legacy;");
+  }
   return { db };
 }
 
@@ -151,21 +173,27 @@ export function saveCompletedInitialTriage(storage: Storage, aggregate: InitialT
   if (!aggregate.reply.trim()) throw new Error("reply must not be empty");
 
   const write = storage.db.transaction(() => {
-    storage.db.query("INSERT INTO conversations (id, customer_json) VALUES (?, ?)").run(
+    storage.db.query("INSERT OR IGNORE INTO conversations (id, customer_json) VALUES (?, ?)").run(
       aggregate.conversation.id,
       JSON.stringify(aggregate.conversation.customer),
     );
-    storage.db.query(`INSERT INTO turns
+    storage.db.query(`INSERT OR IGNORE INTO turns
       (id, conversation_id, state, provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(aggregate.turn.id, aggregate.conversation.id, aggregate.turn.state, aggregate.turn.provider,
         aggregate.turn.model_adapter, aggregate.turn.mock_scenario, aggregate.turn.decision_schema_version,
         aggregate.turn.started_at, aggregate.turn.completed_at);
+    storage.db.query(`UPDATE turns SET state = 'completed', completed_at = ?, provider = ?, model_adapter = ?, mock_scenario = ?, decision_schema_version = ? WHERE id = ?`)
+      .run(aggregate.turn.completed_at, aggregate.turn.provider, aggregate.turn.model_adapter, aggregate.turn.mock_scenario, aggregate.turn.decision_schema_version, aggregate.turn.id);
     storage.db.query(`INSERT INTO requests
-      (id, conversation_id, turn_id, request_key, state, created_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(aggregate.request.id, aggregate.conversation.id, aggregate.turn.id, aggregate.request.key,
-        aggregate.request.state, aggregate.request.created_at, aggregate.request.completed_at);
+      (id, conversation_id, turn_id, endpoint_scope, request_key, body_fingerprint, state, cached_status, cached_response_json, created_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint_scope, request_key) DO UPDATE SET state = excluded.state, cached_status = excluded.cached_status, cached_response_json = excluded.cached_response_json, completed_at = excluded.completed_at
+        WHERE requests.turn_id = excluded.turn_id AND requests.body_fingerprint = excluded.body_fingerprint`)
+      .run(aggregate.request.id, aggregate.conversation.id, aggregate.turn.id, aggregate.request.scope ?? "legacy", aggregate.request.key,
+        aggregate.request.fingerprint ?? "0000000000000000000000000000000000000000000000000000000000000000", aggregate.request.state,
+        aggregate.request.cached_status ?? null, aggregate.request.cached_response ? JSON.stringify(TicketResponseSchema.parse(aggregate.request.cached_response)) : null,
+        aggregate.request.created_at, aggregate.request.completed_at);
     aggregate.messages.forEach((message, index) => storage.db.query(`INSERT INTO messages
       (id, conversation_id, turn_id, sequence, role, content, source_timestamp)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -217,6 +245,12 @@ export function claimRequest(storage: Storage, claim: RequestClaim): RequestReso
       if (existing.state === "completed" && existing.cached_response_json) return RequestResolutionSchema.parse({ outcome: "replay", state: "completed", response: TicketResponseSchema.parse(JSON.parse(existing.cached_response_json)) });
       return RequestResolutionSchema.parse({ outcome: "conflict", state: "conflict", retryable: true, details: { reason: "processing" } });
     }
+    if (!claim.initial) throw new Error("initial request metadata is required");
+    CustomerMetadataSchema.parse(claim.initial.customer);
+    storage.db.query("INSERT INTO conversations (id, customer_json) VALUES (?, ?)").run(claim.conversation_id, JSON.stringify(claim.initial.customer));
+    storage.db.query(`INSERT INTO turns (id, conversation_id, state, provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at)
+      VALUES (?, ?, 'processing', ?, ?, ?, ?, ?, ?)`)
+      .run(claim.turn_id, claim.conversation_id, claim.initial.provider, claim.initial.model_adapter, claim.initial.mock_scenario, claim.initial.decision_schema_version, claim.initial.started_at, null);
     storage.db.query(`INSERT INTO requests (id, conversation_id, turn_id, endpoint_scope, request_key, body_fingerprint, state, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'processing', ?)`)
       .run(crypto.randomUUID(), claim.conversation_id, claim.turn_id, claim.scope, claim.key, claim.fingerprint, new Date().toISOString());
