@@ -151,7 +151,7 @@ export type TicketResponse = z.infer<typeof TicketResponseSchema>;
 
 export const ConversationMessageSchema = z.object({
   id: identifierSchema,
-  role: z.enum(["customer", "support", "assistant"]),
+  role: z.enum(["customer", "support", "operator", "assistant"]),
   content: nonEmptyStringSchema,
   timestamp: z.string().datetime({ offset: true }).nullable(),
 }).strict();

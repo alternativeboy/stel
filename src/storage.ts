@@ -31,8 +31,9 @@ import {
   type StoredEffectAttempt,
   type StoredWorkItem,
 } from "./policy-effects";
+import { FollowUpMessageSchema, type FollowUpMessage } from "./follow-up";
 
-export type StoredMessage = InitialMessage & { id: string };
+export type StoredMessage = (InitialMessage | FollowUpMessage) & { id: string };
 
 export interface InitialTriageAggregate {
   conversation: { id: string; customer: CustomerMetadata };
@@ -92,6 +93,34 @@ export interface StoredRequest {
   completed_at: string | null;
 }
 
+export interface FollowUpClaim {
+  conversation_id: string;
+  scope: string;
+  key: IdempotencyKey;
+  fingerprint: RequestFingerprint;
+  turn_id: string;
+  provider: string;
+  model_adapter: string;
+  mock_scenario: string;
+  decision_schema_version: string;
+  started_at: string;
+}
+
+export interface FollowUpAggregate {
+  conversation_id: string;
+  request: { scope: string; key: IdempotencyKey; fingerprint: RequestFingerprint; turn_id: string; created_at: string; completed_at: string };
+  turn: { id: string; provider: string; model_adapter: string; mock_scenario: string; decision_schema_version: string; started_at: string; completed_at: string };
+  message: { id: string; role: "operator" | "customer"; content: string; timestamp: string };
+  response: TicketResponse;
+}
+
+export interface ConversationHistory {
+  conversation: { id: string; customer: CustomerMetadata };
+  messages: Array<{ id: string; turn_id: string; sequence: number; role: "customer" | "support" | "operator" | "assistant"; content: string; timestamp: string | null }>;
+  turns: Array<{ id: string; state: "processing" | "completed"; provider: string; model_adapter: string; mock_scenario: string; decision_schema_version: string; started_at: string; completed_at: string | null }>;
+  decisions: Decision[];
+}
+
 const requestsTable = `CREATE TABLE IF NOT EXISTS requests (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -146,6 +175,18 @@ const effectsTables = `
     completed_at TEXT
   );`;
 
+const messagesTable = `CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    turn_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    role TEXT NOT NULL CHECK (role IN ('customer', 'support', 'operator', 'assistant')),
+    content TEXT NOT NULL,
+    source_timestamp TEXT,
+    UNIQUE (conversation_id, sequence),
+    FOREIGN KEY (turn_id, conversation_id) REFERENCES turns(id, conversation_id)
+  );`;
+
 const schema = `
   PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS conversations (
@@ -155,17 +196,7 @@ const schema = `
   );
   ${turnsTable}
   ${requestsTable}
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL REFERENCES conversations(id),
-    turn_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL CHECK (sequence > 0),
-    role TEXT NOT NULL CHECK (role IN ('customer', 'support', 'assistant')),
-    content TEXT NOT NULL,
-    source_timestamp TEXT,
-    UNIQUE (conversation_id, sequence),
-    FOREIGN KEY (turn_id, conversation_id) REFERENCES turns(id, conversation_id)
-  );
+  ${messagesTable}
   CREATE TABLE IF NOT EXISTS decisions (
     id TEXT PRIMARY KEY,
     turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id),
@@ -196,6 +227,13 @@ export function openStorage(path: string): Storage {
     db.exec(`INSERT INTO turns (id, conversation_id, state, provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at)
       SELECT id, conversation_id, 'completed', provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at FROM turns_legacy;`);
     db.exec("DROP TABLE turns_legacy;");
+  }
+  const messageDefinition = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() as { sql: string } | null;
+  if (messageDefinition && !messageDefinition.sql.includes("'operator'")) {
+    db.exec("PRAGMA foreign_keys = OFF; ALTER TABLE messages RENAME TO messages_legacy;");
+    db.exec(messagesTable);
+    db.exec("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) SELECT id, conversation_id, turn_id, sequence, role, content, source_timestamp FROM messages_legacy;");
+    db.exec("DROP TABLE messages_legacy; PRAGMA foreign_keys = ON;");
   }
   return { db };
 }
@@ -259,7 +297,9 @@ export function loadConversation(storage: Storage, conversationId: string): Init
   const rows = storage.db.query("SELECT * FROM messages WHERE conversation_id = ? ORDER BY sequence").all(conversationId) as Array<Record<string, string | number | null>>;
   const reply = rows.at(-1);
   if (!reply || reply.role !== "assistant") throw new Error("assistant reply not found");
-  const messages = rows.slice(0, -1).map((row) => InitialMessageSchema.parse({ role: row.role, content: row.content, timestamp: row.source_timestamp }));
+  const messages = rows.slice(0, -1).map((row) => row.role === "operator"
+    ? FollowUpMessageSchema.parse({ role: row.role, content: row.content, timestamp: row.source_timestamp })
+    : InitialMessageSchema.parse({ role: row.role, content: row.content, timestamp: row.source_timestamp }));
   const decisionRow = storage.db.query("SELECT decision_json FROM decisions WHERE turn_id = ?").get(turn.id) as { decision_json: string } | null;
   if (!decisionRow) throw new Error("decision not found");
   return {
@@ -394,4 +434,52 @@ function parseStoredWorkItem(row: Record<string, string | null>): StoredWorkItem
 
 function parseStoredEffectAttempt(row: Record<string, string | null>): StoredEffectAttempt {
   return StoredEffectAttemptSchema.parse({ id: row.id, work_item_id: row.work_item_id, turn_id: row.turn_id, tool_call_id: row.tool_call_id, status: row.status, result: row.result_json === null ? null : JSON.parse(row.result_json), started_at: row.started_at, completed_at: row.completed_at });
+}
+
+export function claimFollowUpRequest(storage: Storage, claim: FollowUpClaim): RequestResolution {
+  IdempotencyKeySchema.parse(claim.key);
+  RequestFingerprintSchema.parse(claim.fingerprint);
+  const resolve = storage.db.transaction((): RequestResolution => {
+    const existing = storage.db.query("SELECT state, body_fingerprint, cached_response_json FROM requests WHERE endpoint_scope = ? AND request_key = ?").get(claim.scope, claim.key) as { state: string; body_fingerprint: string; cached_response_json: string | null } | null;
+    if (existing) {
+      if (existing.body_fingerprint !== claim.fingerprint) return RequestResolutionSchema.parse({ outcome: "conflict", state: "conflict", retryable: false, details: { reason: "different_body" } });
+      if (existing.state === "completed" && existing.cached_response_json) return RequestResolutionSchema.parse({ outcome: "replay", state: "completed", response: TicketResponseSchema.parse(JSON.parse(existing.cached_response_json)) });
+      return RequestResolutionSchema.parse({ outcome: "conflict", state: "conflict", retryable: true, details: { reason: "processing" } });
+    }
+    const conversation = storage.db.query("SELECT id FROM conversations WHERE id = ?").get(claim.conversation_id);
+    if (!conversation) throw new Error("conversation not found");
+    const active = storage.db.query("SELECT id FROM turns WHERE conversation_id = ? AND state = 'processing' LIMIT 1").get(claim.conversation_id);
+    if (active) return RequestResolutionSchema.parse({ outcome: "conflict", state: "conflict", retryable: true, details: { reason: "processing" } });
+    storage.db.query(`INSERT INTO turns (id, conversation_id, state, provider, model_adapter, mock_scenario, decision_schema_version, started_at, completed_at) VALUES (?, ?, 'processing', ?, ?, ?, ?, ?, NULL)`).run(claim.turn_id, claim.conversation_id, claim.provider, claim.model_adapter, claim.mock_scenario, claim.decision_schema_version, claim.started_at);
+    storage.db.query(`INSERT INTO requests (id, conversation_id, turn_id, endpoint_scope, request_key, body_fingerprint, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'processing', ?)`).run(crypto.randomUUID(), claim.conversation_id, claim.turn_id, claim.scope, claim.key, claim.fingerprint, new Date().toISOString());
+    return RequestResolutionSchema.parse({ outcome: "claimed", state: "processing", turn_id: claim.turn_id });
+  });
+  return resolve();
+}
+
+export function saveCompletedFollowUp(storage: Storage, aggregate: FollowUpAggregate): void {
+  const { id: _messageId, ...messageInput } = aggregate.message;
+  FollowUpMessageSchema.parse(messageInput);
+  const response = TicketResponseSchema.parse(aggregate.response);
+  if (response.conversation_id !== aggregate.conversation_id || response.turn_id !== aggregate.turn.id) throw new Error("follow-up response identity does not match turn");
+  const write = storage.db.transaction(() => {
+    const max = storage.db.query("SELECT MAX(sequence) AS sequence FROM messages WHERE conversation_id = ?").get(aggregate.conversation_id) as { sequence: number | null };
+    const start = (max.sequence ?? 0) + 1;
+    storage.db.query("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)").run(aggregate.message.id, aggregate.conversation_id, aggregate.turn.id, start, aggregate.message.role, aggregate.message.content, aggregate.message.timestamp);
+    storage.db.query("INSERT INTO messages (id, conversation_id, turn_id, sequence, role, content, source_timestamp) VALUES (?, ?, ?, ?, 'assistant', ?, NULL)").run(`${aggregate.turn.id}:reply`, aggregate.conversation_id, aggregate.turn.id, start + 1, response.reply);
+    storage.db.query("UPDATE turns SET state = 'completed', completed_at = ? WHERE id = ? AND conversation_id = ?").run(aggregate.turn.completed_at, aggregate.turn.id, aggregate.conversation_id);
+    storage.db.query("INSERT INTO decisions (id, turn_id, schema_version, decision_json, created_at) VALUES (?, ?, ?, ?, ?)").run(response.decision.id, aggregate.turn.id, response.decision.schema_version, JSON.stringify(response.decision), aggregate.turn.completed_at);
+    storage.db.query("UPDATE requests SET state = 'completed', cached_status = 200, cached_response_json = ?, completed_at = ? WHERE endpoint_scope = ? AND request_key = ? AND turn_id = ?").run(JSON.stringify(response), aggregate.turn.completed_at, aggregate.request.scope, aggregate.request.key, aggregate.turn.id);
+  });
+  write();
+}
+
+export function loadConversationHistory(storage: Storage, conversationId: string): ConversationHistory {
+  const row = storage.db.query("SELECT id, customer_json FROM conversations WHERE id = ?").get(conversationId) as { id: string; customer_json: string } | null;
+  if (!row) throw new Error("conversation not found");
+  const customer = CustomerMetadataSchema.parse(JSON.parse(row.customer_json));
+  const turns = (storage.db.query("SELECT * FROM turns WHERE conversation_id = ? ORDER BY started_at, id").all(conversationId) as Array<Record<string, string | null>>).map((turn) => ({ id: turn.id!, state: turn.state as "processing" | "completed", provider: turn.provider!, model_adapter: turn.model_adapter!, mock_scenario: turn.mock_scenario!, decision_schema_version: turn.decision_schema_version!, started_at: turn.started_at!, completed_at: turn.completed_at }));
+  const messages = (storage.db.query("SELECT * FROM messages WHERE conversation_id = ? ORDER BY sequence").all(conversationId) as Array<Record<string, string | number | null>>).map((message) => ({ id: String(message.id), turn_id: String(message.turn_id), sequence: Number(message.sequence), role: message.role as ConversationHistory["messages"][number]["role"], content: String(message.content), timestamp: message.source_timestamp as string | null }));
+  const decisions = (storage.db.query("SELECT decision_json FROM decisions WHERE turn_id IN (SELECT id FROM turns WHERE conversation_id = ?) ORDER BY created_at, id").all(conversationId) as Array<{ decision_json: string }>).map((decision) => DecisionSchema.parse(JSON.parse(decision.decision_json)));
+  return { conversation: { id: row.id, customer }, messages, turns, decisions };
 }
