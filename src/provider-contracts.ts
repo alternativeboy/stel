@@ -46,7 +46,7 @@ export const ProviderRequestSchema = z.object({
 }).strict();
 
 export const ProviderResponseSchema = z.object({
-  reply: bounded.max(8_000),
+  reply: z.string().trim().min(1).max(8_000),
   decision: DecisionSchema,
   tool_requests: ToolRequestSchema.array().max(3).optional(),
 }).strict();
